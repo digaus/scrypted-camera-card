@@ -3,6 +3,8 @@
 Lovelace card that streams a Scrypted camera over WebRTC directly, with two-way
 audio. No iframe, no Scrypted console, no CSS injection, no scraped selectors.
 
+![The card in Home Assistant's card editor: three lines of configuration on the left, a live stream in the preview on the right](images/example.png)
+
 ## Before you install: this card does not work in every setup
 
 It reaches Scrypted through the **Home Assistant Supervisor ingress API**, which
@@ -32,8 +34,25 @@ Not in the default HACS store yet, so add it as a custom repository: HACS →
 three-dot menu → **Custom repositories** → this repository's URL, category
 **Dashboard**. Then install "Scrypted Camera Card" and reload the browser.
 
-HACS registers the Lovelace resource itself; there is nothing to add under
-Settings → Dashboards → Resources.
+On a **storage-mode** dashboard — the default, edited through the UI — HACS registers
+the Lovelace resource itself and there is nothing to add under Settings → Dashboards →
+Resources.
+
+On a **YAML-mode** dashboard HACS cannot register resources at all, so add it yourself
+in `configuration.yaml`:
+
+```yaml
+lovelace:
+  mode: yaml
+  resources:
+    - url: /hacsfiles/scrypted-camera-card/scrypted-camera-card.js?v=0.1.0
+      type: module
+```
+
+Note the `?v=`. HACS appends its own cache-busting query when it registers a resource,
+and a hand-written entry gets none — so without it a browser or the Home Assistant
+service worker will keep serving the previous bundle after a HACS update, which looks
+exactly like the update not having worked. Bump the value whenever you update.
 
 ### Manual
 
