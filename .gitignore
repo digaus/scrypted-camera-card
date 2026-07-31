@@ -1,0 +1,13 @@
+/node_modules
+.DS_Store
+
+# Plans, backlog and internal notes stay local: they document the process rather
+# than the product, and this repository is public. Note the consequence - nothing
+# in here is backed up by the repo, and it is lost with the working copy.
+/docs
+
+# The bundle ships as a GitHub release asset, not as a repo file - see
+# .github/workflows/release.yml. Tracking it would put a diff on one minified
+# line in every commit, and would give HACS two possible sources for the same
+# file depending on whether a release exists.
+/dist

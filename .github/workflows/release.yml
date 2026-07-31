@@ -1,0 +1,38 @@
+# Builds the bundle and attaches it to the GitHub release. HACS installs a
+# plugin from the release asset whose name matches `filename` in hacs.json,
+# so the asset name below and that field must stay identical.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # ci, not install: the lockfile is the record of what was tested.
+      - run: npm ci
+
+      - run: npm run build
+
+      # Fail loudly rather than publishing a release with no asset, which HACS
+      # would report to users as a broken install.
+      - name: Check the bundle exists
+        run: test -s dist/scrypted-camera-card.js
+
+      # gh is preinstalled on the runner, so this needs no third-party action.
+      - name: Attach the bundle to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/scrypted-camera-card.js --clobber

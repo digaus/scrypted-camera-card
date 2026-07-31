@@ -1,0 +1,36 @@
+# HACS's own validator. Required only if this repository is ever submitted to
+# the default HACS store; for a custom-repository install nobody checks it. It
+# is here anyway because it catches the mistakes that are invisible locally -
+# a missing description or topic on the GitHub repo, a hacs.json that does not
+# parse, no release.
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # The rules change on HACS's side, not ours, so a repo that passed once can
+    # start failing without a commit.
+    - cron: "0 4 * * 1"
+
+jobs:
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: plugin
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: test -s dist/scrypted-camera-card.js
