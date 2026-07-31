@@ -7,6 +7,25 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.1.1] - 2026-07-31
+
+Documentation only — the card itself is unchanged. Released rather than pushed,
+because HACS appears to render the README from the release rather than from the
+default branch, so a branch-only fix never reaches anyone.
+
+### Fixed
+
+- The installation instructions claimed HACS registers the Lovelace resource by
+  itself and that nothing needs adding by hand. That holds for storage-mode
+  dashboards only. On a **YAML-mode** dashboard HACS cannot register resources at
+  all, and the entry has to go into `configuration.yaml` — documented now, together
+  with the `?v=` cache-busting query a hand-written entry needs and HACS's own
+  registration provides.
+
+### Added
+
+- A screenshot of the card in Home Assistant's card editor.
+
 ## [0.1.0] - 2026-07-31
 
 First public release. The list below describes what the card does rather than the
