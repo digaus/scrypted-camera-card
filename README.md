@@ -14,13 +14,14 @@ means all of the following have to be true:
   HA Core have no Supervisor and cannot serve ingress.
 - Scrypted runs as a **Home Assistant add-on**. A Scrypted in its own Docker
   container, on a NAS or on another host is not reachable this way.
-- The HA user viewing the dashboard is an **administrator**. The Supervisor
-  websocket API is admin-only, so the card stays blank for everyone else in the
-  household.
+**Administrator rights are *not* required.** They used to be, and this is the one
+point people carry over from older versions: the card no longer asks Home Assistant
+for the list of installed add-ons, which was the only admin-gated call it made. A
+non-admin account works.
 
-If any of those does not hold, this card is the wrong tool today — there is no
-option to point it at a Scrypted URL directly. That is a known limitation, not an
-oversight.
+If either of the two points above does not hold, this card is the wrong tool today —
+there is no option to point it at a Scrypted URL directly. That is a known
+limitation, not an oversight.
 
 Tested against Scrypted 0.143.0. Scrypted's RPC and `RTCSignalingSession` are
 internal interfaces rather than a documented public API, so a Scrypted update can
@@ -141,7 +142,7 @@ name: Eingang          # optional, shown in the control bar
 aspect_ratio: 16 / 9   # optional, any CSS aspect-ratio value
 autoplay: false        # optional, default false - see below
 # destination: low-resolution  # optional, see below
-# addon: a0d7b954_scrypted   # only if add-on auto-detection picks the wrong one
+# addon: 09e60fb6_scrypted   # only if your add-on's slug differs from this default
 # username / password        # only if your Scrypted does not trust the ingress user
 ```
 
@@ -155,6 +156,24 @@ has been started - by autoplay or by the button - the card keeps trying to hold
 it, and self-healing resumes it after an add-on restart, a dropped websocket or a
 network outage regardless of this setting. Pressing stop is what revokes that
 intent.
+
+**`username` / `password`** are optional and do two different things depending on why
+you set them.
+
+Left empty, the card connects as whoever the Scrypted add-on decides an ingress
+request is — usually an account with full access. Filled in, the card authenticates
+as that Scrypted user instead, so a viewer account restricted to a few cameras limits
+what the card can show. That is the reason to use them, and the setup worth having if
+other people in the household see this dashboard.
+
+Two things to know before you do:
+
+- **The dashboard configuration is not a secret store.** Any logged-in Home Assistant
+  user can read it over the websocket API, so treat these as credentials for a
+  restricted viewer account and nothing more.
+- **They do not restrict Scrypted itself.** They scope what this card displays. A Home
+  Assistant user who can load the card can also open Scrypted's own interface through
+  the ingress URL, whatever the card authenticated as. See _Known risks_.
 
 **`destination`** picks which of the camera's streams to pull. Accepted values are
 `local`, `remote` and `low-resolution` — the same names Scrypted offers in its own
@@ -215,6 +234,14 @@ supported path.
 **Talkback availability.** The mic button only appears when the plugin negotiates
 `sendrecv` audio, which requires the camera to expose `Intercom`. If it stays
 hidden, check the camera in Scrypted for the Intercom interface.
+
+**A Home Assistant account is effectively Scrypted access.** Creating an ingress
+session is not admin-gated, so any logged-in Home Assistant user can open Scrypted's
+full interface at its ingress URL — with this card, or with two lines in a browser
+console and no card at all. The card uses that door rather than opening it, and
+nothing it can do would close it. If someone should not reach Scrypted, that boundary
+belongs in Scrypted's own user management, or in not giving them a Home Assistant
+account — a dashboard card cannot enforce it.
 
 **Verify first.** `getDeviceById` / `getDeviceByName` and the exact
 `connectScryptedClient` option set were taken from the current Scrypted sources.

@@ -7,6 +7,50 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.2.0] - 2026-07-31
+
+### Changed
+
+- **Non-admin Home Assistant users can now use the card.** Measured: of the three
+  Supervisor calls the card made, only the add-on *list* was admin-gated. `addon` now
+  defaults to `09e60fb6_scrypted`, which removes that call entirely — so non-admin
+  access is the ordinary path rather than a special case, and administrator rights are
+  no longer required at all.
+- **`username` / `password` are now the way to scope what the card shows.** Left empty
+  the card connects as whatever the add-on considers an ingress request, usually an
+  account with full access. Filled in with a Scrypted viewer account restricted to a few
+  cameras, the card is limited to those. Documented as such; the editor previously
+  advised leaving them empty.
+
+### Removed
+
+- **Add-on auto-detection, and the add-on dropdown in the editor.** Both needed the
+  admin-only list call, so the dropdown could never work for the users this release is
+  for. `addon` is a plain text field showing the default.
+
+  **If your Scrypted add-on's slug differs from the default** — a different add-on
+  repository, a fork, or a locally installed add-on — set `addon` in the card config.
+  The slug was checked across several Home Assistant installations and was always the
+  same, because the prefix derives from the add-on repository rather than the
+  installation, so this should affect very few setups. If it affects yours, the card
+  names both the slug it tried and `addon` as the fix.
+
+### Fixed
+
+- An authorization refusal from Home Assistant no longer retries forever. It used to go
+  into the normal reconnect machinery, so a non-admin viewing a dashboard produced an
+  attempt every 30 seconds for as long as the page was open — once per card.
+- When credentials are in use and the camera is not found, the message now says it may
+  be outside that Scrypted account's permissions rather than only suggesting a typo. The
+  card cannot tell the two apart, so it names both.
+
+### Security
+
+- Documented that a Home Assistant account is effectively Scrypted access: creating an
+  ingress session is not admin-gated, so any logged-in user can open Scrypted's
+  interface directly, with or without this card. Credentials in the card scope what the
+  *card* shows and do not restrict Scrypted itself.
+
 ## [0.1.1] - 2026-07-31
 
 Documentation only — the card itself is unchanged. Released rather than pushed,

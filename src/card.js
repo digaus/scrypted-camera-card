@@ -76,18 +76,15 @@ const RTC_SIGNALING_CHANNEL = 'x-scrypted/x-scrypted-rtc-signaling-channel';
 // validation in setConfig() and offer a value the card then refuses.
 export const DESTINATIONS = ['local', 'remote', 'low-resolution'];
 
-// Which installed add-on the card talks to when `addon` is not configured. Slug and
-// name both count: the slug carries a per-install prefix (a0d7b954_scrypted) and a
-// repository is free to name the add-on anything.
-// src/editor.js carries a copy of this test for its dropdown, kept in step by hand.
-// That is a decision, not a constraint: the editor already imports DESTINATIONS and
-// withTimeout from this file, so exporting this predicate would work and would remove
-// the drift risk. Left duplicated deliberately (2026-07-31) - so if you are here to
-// tidy it up, that is a change to make, not a bug to fix.
-// The two copies must agree on what counts as a candidate: a disagreement would hide
-// the add-on the card picks, or offer one the card ignores. Changing the test means
-// changing it in both files.
-const isScryptedAddon = (addon) => /scrypted/i.test(addon.slug) || /scrypted/i.test(addon.name);
+// Which add-on the card talks to when `addon` is not configured. Not a guess:
+// measured across several Home Assistant installations, the slug is always this,
+// because the prefix derives from the add-on repository rather than the installation.
+// A default here is what removes the `/addons` list call that used to resolve it - the
+// one Supervisor call Home Assistant refuses to a non-admin user (measured on
+// 2026.7.4), and therefore the one thing that made non-admin support a special case.
+// Exported for the editor, which shows it as the field's default: a second literal
+// there would drift from what the card actually connects to.
+export const DEFAULT_ADDON = '09e60fb6_scrypted';
 
 // Stacking contract inside .wrap, bottom to top: video (in flow), poster, spinner,
 // message, bar. The bar must stay on top - it was only ever on top by document
@@ -151,6 +148,19 @@ const ICON_STOP = '<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';
 const ICON_MIC = '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>';
 const ICON_SOUND = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
 const ICON_MUTED = '<svg viewBox="0 0 24 24"><path d="M4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a9 9 0 003.69-1.81L19.73 21 21 19.73 4.27 3zM12 4L9.91 6.09 12 8.18V4zm7 8c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71z"/></svg>';
+
+/**
+ * Whether a failed hass.callWS() was a refusal rather than a fault. The distinction
+ * decides whether the card retries at all, so it must not be widened: Home Assistant
+ * answers a call the logged-in user may not make with the code `unauthorized` (message
+ * "Unauthorized" - measured), while a Supervisor that is down, restarting or slow comes
+ * back as `unknown_error` or does not come back at all. Only the first cannot heal by
+ * retrying. Treating the second as permanent would take self-healing away from every
+ * user the card already works for, which is the more expensive mistake of the two.
+ * The code and not the message: the text is human-readable and free to change between
+ * versions, the code is the constant Home Assistant's websocket API answers with.
+ */
+const isRefusal = (err) => !!err && err.code === 'unauthorized';
 
 /** A dead RPC peer swallows calls without ever rejecting, which would hang recovery. */
 export const withTimeout = (promise, ms) => Promise.race([
@@ -224,6 +234,11 @@ class ScryptedCameraCard extends HTMLElement {
     }
     const first = !this._config;
     this._config = { autoplay: false, aspect_ratio: '16 / 9', ...config };
+    // Always a slug from here on, so _ingressBaseUrl() never has to look one up - see
+    // DEFAULT_ADDON. Applied after the spread rather than as a default inside it,
+    // because hand-written YAML can carry `addon:` with nothing behind it, and an empty
+    // slug would send the card off to ask the Supervisor about an add-on called "".
+    this._config.addon = this._config.addon || DEFAULT_ADDON;
     // The first call only, and deliberately not "apply the config": from here on
     // _wantStream is the card's, for the reason spelled out in the constructor. HA's
     // visual editor calls setConfig() on every keystroke, so re-seeding it would let a
@@ -553,8 +568,12 @@ class ScryptedCameraCard extends HTMLElement {
         baseUrl,
         pluginId: '@scrypted/core',
         clientName: 'ha-scrypted-card',
-        // No credentials: the Scrypted add-on authenticates the ingress user.
-        // Add username/password to the card config only if yours does not.
+        // Optional, and the reason to set them is scope rather than access: left
+        // empty the add-on authenticates the ingress request as whatever it considers
+        // that user, usually with full access. Filled in, the card is that Scrypted
+        // user instead, so a viewer account restricted to a few cameras limits what
+        // this card can show. It does not limit what the *browser* can reach - the
+        // ingress session cookie authorizes the whole add-on either way.
         username: this._config.username,
         password: this._config.password,
       });
@@ -589,7 +608,17 @@ class ScryptedCameraCard extends HTMLElement {
       };
 
       const device = this._findDevice();
-      if (!device) throw new Error(`device "${this._config.device}" not found`);
+      if (!device) {
+        // With credentials in use there are two causes and the card cannot tell them
+        // apart: a wrong id or name, or a camera this Scrypted account is not allowed
+        // to see - a restricted account simply does not have it in systemManager.
+        // Naming only the typo is what sends someone hunting for a mistake that is not
+        // there, so both are named and neither is claimed.
+        throw new Error(this._config.username
+          ? `device "${this._config.device}" not found - check the id or name, or whether`
+            + ` the Scrypted user "${this._config.username}" is allowed to see it`
+          : `device "${this._config.device}" not found`);
+      }
       if (!device.interfaces.includes('RTCSignalingChannel')) {
         throw new Error(`${device.name} has no RTCSignalingChannel - enable the WebRTC plugin`);
       }
@@ -628,6 +657,21 @@ class ScryptedCameraCard extends HTMLElement {
         this._syncStatus();
       }
     } catch (err) {
+      // Home Assistant refused the call, so retrying it will be refused too. Routed
+      // exactly like the destination refusal above - shown, and not through
+      // _scheduleRetry() - because that is what the loop was: every non-admin on the
+      // dashboard produced one attempt every 30 s for as long as the page stayed open,
+      // one loop per card. The raw refusal is the single word "Unauthorized", which
+      // names neither what was refused nor what to do about it, so it goes to the
+      // console and the user gets the sentence instead. Pressing play still tries
+      // again - that is a person asking, not a loop.
+      if (isRefusal(err)) {
+        console.warn('[scrypted-card] Home Assistant refused a Supervisor call', err);
+        this._busy(false);
+        this._status('Home Assistant refused access to the Scrypted add-on'
+          + ' - this needs an administrator account');
+        return;
+      }
       this._scheduleRetry(String(err.message || err));
     } finally {
       // Cleared here even though a timed-out attempt can still be in flight, so a
@@ -650,24 +694,9 @@ class ScryptedCameraCard extends HTMLElement {
    */
   async _ingressBaseUrl(gen) {
     const ws = (msg) => this._hass.callWS(msg);
-
-    let slug = this._config.addon;
-    if (!slug) {
-      const { addons } = await ws({ type: 'supervisor/api', endpoint: '/addons', method: 'get' });
-      const candidates = (addons || []).filter(isScryptedAddon);
-      if (!candidates.length) throw new Error('no Scrypted add-on found - set "addon" in the card config');
-      // Taking the first of several is how this card connected to a beta channel
-      // beside a stable one and said nothing, leaving the user to look for the fault
-      // in the camera. The slugs are in the message because they are exactly what has
-      // to go into `addon`, and looking them up means leaving the dashboard.
-      if (candidates.length > 1) {
-        throw new Error(
-          `several Scrypted add-ons installed (${candidates.map((a) => a.slug).join(', ')})`
-          + ' - set "addon" in the card config to choose one',
-        );
-      }
-      slug = candidates[0].slug;
-    }
+    // setConfig() guarantees a value, so nothing here resolves one: the list call that
+    // used to do that was the card's only admin-gated call - see DEFAULT_ADDON.
+    const slug = this._config.addon;
 
     const start = async () => {
       const { session } = await ws({
@@ -711,8 +740,22 @@ class ScryptedCameraCard extends HTMLElement {
       }).catch(async () => { session = await start().catch(() => session); }));
     }
 
+    // A slug that names no installed add-on is the one failure a default introduces,
+    // and it is now reachable without anybody having configured anything. The
+    // Supervisor reports it as a generic error whose text names neither the slug that
+    // was tried nor the option that changes it, which is where the user gets stuck -
+    // so it is restated here. Deliberately still a retrying failure: the very same
+    // generic error covers a Supervisor that is briefly unreachable, and the two cannot
+    // be told apart from here. A refusal passes through untouched, because it is
+    // classified by its code in _start() and wrapping it would hide that code.
     const info = await ws({
       type: 'supervisor/api', endpoint: `/addons/${slug}/info`, method: 'get',
+    }).catch((err) => {
+      if (isRefusal(err)) throw err;
+      throw new Error(
+        `add-on "${slug}" could not be read (${String(err.message || err)})`
+        + ' - set "addon" in the card config to the slug of your Scrypted add-on',
+      );
     });
     if (!info.ingress_entry) throw new Error(`add-on ${slug} has no ingress entry`);
     return new URL(`${info.ingress_entry}/`, location.origin).toString();
