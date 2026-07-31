@@ -1,17 +1,19 @@
-# Builds the bundle and attaches it to the GitHub release. HACS installs a
-# plugin from the release asset whose name matches `filename` in hacs.json,
-# so the asset name below and that field must stay identical.
+# Pushing a `v*` tag builds the bundle and *then* creates the release with it
+# attached. Deliberately in that order: HACS installs a plugin from the release
+# asset named in hacs.json, so a release that exists without its asset is a broken
+# install for anyone who catches that window. Creating the release last means a
+# failed build publishes nothing at all, which is the safe way round.
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,13 +28,27 @@ jobs:
 
       - run: npm run build
 
-      # Fail loudly rather than publishing a release with no asset, which HACS
-      # would report to users as a broken install.
+      # The asset name and `filename` in hacs.json must stay identical.
       - name: Check the bundle exists
         run: test -s dist/scrypted-camera-card.js
 
+      # Release notes come from the matching CHANGELOG section, so what HACS shows
+      # users is the same text the repository carries. Falls back to generated notes
+      # rather than publishing an empty body.
+      - name: Collect release notes
+        run: |
+          awk '/^## /{ if (n++) exit; next } n' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "NOTES=generate" >> "$GITHUB_ENV"; fi
+
       # gh is preinstalled on the runner, so this needs no third-party action.
-      - name: Attach the bundle to the release
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/scrypted-camera-card.js --clobber
+        run: |
+          if [ "$NOTES" = "generate" ]; then
+            gh release create "$GITHUB_REF_NAME" dist/scrypted-camera-card.js \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          else
+            gh release create "$GITHUB_REF_NAME" dist/scrypted-camera-card.js \
+              --title "$GITHUB_REF_NAME" --notes-file notes.md
+          fi

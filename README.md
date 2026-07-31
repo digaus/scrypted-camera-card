@@ -98,15 +98,20 @@ To use a self-built bundle, follow _Manual_ under _Install_.
 `hacs.json` names the file HACS looks for, and it must match the release asset
 exactly. Cutting a release:
 
-1. Bump `version` in `package.json` and add a `CHANGELOG.md` entry.
-2. Tag and publish a GitHub release, e.g. `v0.2.0`.
-3. `.github/workflows/release.yml` builds on publish and attaches
-   `scrypted-camera-card.js` to that release. HACS offers the new version once the
-   asset is there — check that the workflow finished before telling anyone.
+1. Bump `version` in `package.json` and add a `CHANGELOG.md` entry under a heading
+   for the new version. The workflow takes the **topmost** `## ` section as the release
+   notes, so the new version has to be at the top — an empty `[Unreleased]` heading
+   above it would be picked instead, and the release would fall back to generated
+   notes.
+2. Tag and push, e.g. `git tag v0.2.0 && git push origin v0.2.0`. That is all —
+   do **not** create the release by hand.
+3. `.github/workflows/release.yml` builds the bundle and then creates the release
+   with `scrypted-camera-card.js` attached.
 
-The bundle is deliberately not committed, so a release with a failed workflow has
-*no* asset rather than a stale one. That is the intended failure mode: visibly
-broken beats quietly outdated.
+The order matters. The release is created *last*, so a failed build publishes nothing
+instead of leaving a release without its asset — which is what HACS would install as
+broken. The bundle is deliberately not committed for the same reason: there is no stale
+copy that could be shipped in place of a fresh one.
 
 ## Card config
 

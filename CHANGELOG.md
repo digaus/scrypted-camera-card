@@ -7,7 +7,7 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
-## [Unreleased]
+## [0.1.0] - 2026-07-31
 
 First public release. The list below describes what the card does rather than the
 steps taken to get there: there is no published predecessor to mark things as
