@@ -99,7 +99,9 @@ const VERSION = typeof __CARD_VERSION__ === 'string' ? __CARD_VERSION__ : 'dev';
 // full-box overlay above the buttons and swallow every click. The message also
 // gets pointer-events: none, so a future reorder cannot reintroduce that.
 // The spinner is a layer again - F02 had moved it into the play button. It sits
-// above the poster so a snapshot cannot hide it.
+// above the poster so a snapshot cannot hide it. The version label shares both that
+// layer and that corner, which only works because the two are never visible at the
+// same time - see .version and _syncVersion().
 const Z_POSTER = 1;
 const Z_SPIN = 2;
 const Z_MSG = 3;
@@ -123,13 +125,11 @@ const STYLES = `
   .bar button { all: unset; cursor: pointer; padding: 6px; border-radius: 50%;
                 line-height: 0; color: #fff; }
   .bar button:hover { background: rgba(255,255,255,.15); }
-  /* Talk and sound keep one icon in both states, so colour is the whole visual
-     difference between on and off - which is why it is color and not opacity.
-     Opacity already belongs to the pulse below (and to its static reduced-motion
-     substitute), and an off state that also dimmed would make "off" and "waiting"
-     the same picture, on top of leaving the pulse almost no range to move in on an
-     already-dimmed icon. Colour says which state, opacity says waiting or not. */
-  .bar button[aria-pressed="false"] { color: var(--secondary-text-color, #727272); }
+  /* Only the on state repaints; off is the bar's own white, inherited, with no rule of
+     its own. A grey off state was tried and dropped: opacity already belongs to the
+     pulse below (and to its static reduced-motion substitute), so a dimmed grey icon
+     made "off" and "waiting" the same picture and left the pulse almost no range to
+     move in. Sound also crosses itself out when off; talk has this colour alone. */
   .bar button[aria-pressed="true"] { color: #ff5252; }
   .bar button[hidden] { display: none; }
   /* Waiting is slow enough here to need saying - starting talkback can take
@@ -143,26 +143,9 @@ const STYLES = `
      ring is the only sign that the picture is not live (docs/limitations.md), and it
      and a starting intercom can be true at once. */
   .bar button.busy { animation: pulse 1.2s ease-in-out infinite; }
-  /* Waiting is neither of the two states above, so it takes neither of their colours:
-     a talkback that is starting is not off any more and not on yet. Measured reason as
-     well as an honest one - grey at the pulse's .35 trough is ~1.5:1 against the bar,
-     and the reduced-motion substitute below is a *static* opacity, so the icon would
-     sit permanently near-invisible. On white that same .5 lands back around 5:1.
-     inherit, not another #fff: the bar sets the colour buttons start from, and one
-     literal is enough.
-     MUST STAY BELOW the two [aria-pressed] rules - identical specificity (0,2,1), so
-     source order is the only thing making the busy colour win. Moving it up silently
-     restores the contrast regression. */
-  .bar button.busy { color: inherit; }
   .label { font: 500 12px/1 var(--paper-font-body1_-_font-family, sans-serif);
            letter-spacing: .04em; text-transform: uppercase; opacity: .85; }
   .spacer { flex: 1; }
-  /* Deliberately quieter than .label: the name is what the card is, the version is a
-     footnote for whoever is checking which build they are looking at. Smaller and
-     dimmed rather than a different colour, so it stays legible over a bright scene
-     through the bar's drop-shadow. */
-  .version { font: 500 10px/1 var(--paper-font-body1_-_font-family, sans-serif);
-             letter-spacing: .04em; opacity: .45; }
   .msg { position: absolute; inset: 0; z-index: ${Z_MSG}; pointer-events: none;
          display: flex; align-items: center;
          justify-content: center; padding: 12px; text-align: center;
@@ -179,6 +162,30 @@ const STYLES = `
           animation: spin 1s linear infinite;
           filter: drop-shadow(0 1px 2px rgba(0,0,0,.8)); }
   .spin[hidden] { display: none; }
+  /* The ring's own corner, same inset, deliberately overlapping it - nothing in this
+     stylesheet keeps the two apart. What makes that safe is _syncVersion(): the version
+     shows only while the card offers play *and* is not waiting, which is exactly when
+     the ring is off, so the two can never be on screen at the same time. That mutual
+     exclusion is load-bearing layout. Anyone who makes the version visible during a
+     load, or gives the ring a job beyond "the card is waiting", has to move one of the
+     two first - otherwise a spinner is drawn straight through a version string.
+     Line height 1, not the ring's 24px: with nothing beside it to centre against, the
+     label reads as misplaced unless its top sits on the same 8px inset as everything
+     else in this corner.
+     Same drop-shadow as the ring, for the same reason: this floats over the picture,
+     and a dimmed 10px label over a bright snapshot is otherwise unreadable.
+     Z_SPIN, the ring's layer: nothing is gained by separating them when they cannot
+     coexist, and this stays below Z_MSG - the message box spans the whole card and
+     centres its text, so a long enough error reaches up here, and an error the user may
+     have to act on must win over a build number.
+     Quieter than .label: the name is what the card is, the version is a footnote for
+     whoever is checking which build they are looking at.
+     No [hidden] rule of its own - that exists for .bar button because all: unset kills
+     the UA one; nothing here sets display, so hidden still works. */
+  .version { position: absolute; top: 8px; right: 8px; z-index: ${Z_SPIN};
+             font: 500 10px/1 var(--paper-font-body1_-_font-family, sans-serif);
+             letter-spacing: .04em; opacity: .45;
+             filter: drop-shadow(0 1px 2px rgba(0,0,0,.8)); }
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 50% { opacity: .35; } }
   /* Still a visible ring and a visibly busy button, just not moving ones. */
@@ -192,7 +199,11 @@ const STYLES = `
 const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
 const ICON_STOP = '<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';
 const ICON_MIC = '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>';
+// The sound pair shows the current state, not the action a press would perform: crossed
+// out means off, so an idle card renders the muted one. Talk has no such pair - the
+// crossed-out microphone was tried and did not look good, so its state is colour only.
 const ICON_SOUND = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+const ICON_MUTED = '<svg viewBox="0 0 24 24"><path d="M4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a9 9 0 003.69-1.81L19.73 21 21 19.73 4.27 3zM12 4L9.91 6.09 12 8.18V4zm7 8c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71z"/></svg>';
 
 /**
  * Whether a failed hass.callWS() was a refusal rather than a fault. The distinction
@@ -268,6 +279,10 @@ class ScryptedCameraCard extends HTMLElement {
     // False for one that never got a stream up - see _syncStatus().
     this._outageFromLive = false;
     this._showStop = false;
+    // The card is waiting for something. _busy() is the only writer; it exists because
+    // that fact has renderings (the ring, the play button's pulse) but no reading of
+    // one of those renderings could stand in for it - see _syncVersion().
+    this._waiting = false;
     this._stream = null;  // we own the inbound MediaStream, see onTrack
     this._onVisibility = () => this._syncPlayback();
     this._onOnline = () => this._onNetworkBack();
@@ -354,13 +369,12 @@ class ScryptedCameraCard extends HTMLElement {
    * by _applyConfig() into the elements cached below, which is what lets this run
    * exactly once per card.
    *
-   * The version is last in the bar so it occupies the right end that _stop() frees when
-   * it hides the sound and talk buttons - inside the existing layout, where it cannot
-   * collide with anything, rather than overlaid on the picture. Its text is written here
-   * and never again, because it cannot change; only its visibility is state, and
-   * _syncToggle() owns that. aria-hidden because it is decoration for a human reading
-   * the card: the label is the card's identity, and a build number announced ahead of
-   * the controls is noise.
+   * The version sits over the picture in the spinner's corner, not at the right end of
+   * the bar, and the two share that corner because they can never be visible together -
+   * see .version and _syncVersion(). Its text is written here and never again, because
+   * it cannot change; only its visibility is state, and _syncVersion() owns that.
+   * aria-hidden because it is decoration for a human reading the card: the label is the
+   * card's identity, and a build number announced ahead of the controls is noise.
    */
   _create() {
     this.attachShadow({ mode: 'open' });
@@ -371,14 +385,14 @@ class ScryptedCameraCard extends HTMLElement {
           <video playsinline muted></video>
           <img class="poster" alt="" hidden>
           <div class="spin" role="status" aria-label="Loading" hidden></div>
+          <span class="version" aria-hidden="true">v${VERSION}</span>
           <div class="msg" hidden></div>
           <div class="bar">
             <button class="toggle" title="Play/Stop">${ICON_PLAY}</button>
             <span class="label"></span>
             <span class="spacer"></span>
-            <button class="speaker" title="Sound" aria-pressed="false" hidden>${ICON_SOUND}</button>
+            <button class="speaker" title="Sound" aria-pressed="false" hidden>${ICON_MUTED}</button>
             <button class="mic" title="Talk" hidden></button>
-            <span class="version" aria-hidden="true">v${VERSION}</span>
           </div>
         </div>
       </ha-card>`;
@@ -442,11 +456,17 @@ class ScryptedCameraCard extends HTMLElement {
    * alone says nothing to a screen reader.
    */
   _busy(on) {
+    // The fact first, its renderings after. _syncVersion() reads it back, so it has to
+    // be true before anything derives from it.
+    this._waiting = on;
     this._spin.hidden = !on;
     // Class and attribute only. _syncToggle() owns innerHTML and touches nothing else,
     // so neither writer can overwrite the other's half of the button.
     this._toggle.classList.toggle('busy', on);
     this._toggle.setAttribute('aria-busy', String(on));
+    // The version shares this corner with the ring, so it has to go the moment the ring
+    // arrives. Called, not written here - see _syncVersion().
+    this._syncVersion();
   }
 
   /**
@@ -459,17 +479,36 @@ class ScryptedCameraCard extends HTMLElement {
    * and that backoff can be 30 s long. _busy() pulses it instead, which leaves the icon
    * to mean one thing only - hence no busy branch here.
    *
-   * The version rides along here rather than getting a flag of its own, because "the
-   * button offers play" is already the condition it wants - every state that shows play
-   * is a state with no live picture, and it goes away the moment one arrives. That is
-   * the stopped card and the first connect; a retry backoff keeps the stop button (see
-   * _scheduleRetry) and therefore hides the version, which is the right way round
-   * anyway, since that case is holding a picture that was working. A second piece of
-   * state would only be able to disagree with this one.
+   * The version is one of this button's two facts, so it is notified from here - but
+   * written in _syncVersion(), which owns it, because the other fact arrives from
+   * _busy().
    */
   _syncToggle() {
     this._toggle.innerHTML = this._showStop ? ICON_STOP : ICON_PLAY;
-    this._version.hidden = this._showStop;
+    this._syncVersion();
+  }
+
+  /**
+   * The only writer of the version's visibility. Two facts decide it and they arrive
+   * from different places - the button's face from _syncToggle(), the wait from _busy() -
+   * so both call this and neither touches .hidden. Same shape as _syncStatus() and for
+   * the same reason: one property written from two sites is one property that will end
+   * up saying two things, and this file has already paid for that twice.
+   *
+   * Shown in the paused state only, which is "play is offered *and* nothing is in
+   * flight". _showStop alone was not that: a first connect still offers play, so the
+   * version stayed up while the card loaded. Both conditions hide it, and a retry
+   * backoff hides it twice over - stop button and waiting - which is right, since that
+   * case is holding a picture that was working.
+   *
+   * _waiting, not `!this._spin.hidden`: the ring is one rendering of the wait and the
+   * play button's pulse is another, so reading the ring would make the version a
+   * rendering of a rendering - wrong the moment anything gives the ring a second use, or
+   * shows it for something that is not a wait. The field is the fact itself, and _busy()
+   * sets it before calling here.
+   */
+  _syncVersion() {
+    this._version.hidden = this._showStop || this._waiting;
   }
 
   /**
@@ -1379,9 +1418,10 @@ class ScryptedCameraCard extends HTMLElement {
 
   _syncSpeaker() {
     const on = !this._video.muted;
-    // The icon is the same either way; aria-pressed is what says which state it is
-    // in, for the stylesheet and for a screen reader both.
-    this._speaker.innerHTML = ICON_SOUND;
+    // Icon and aria-pressed from the one state, in the one place: the crossed-out
+    // speaker is what a sighted user reads, aria-pressed what the stylesheet and a
+    // screen reader read, and they cannot drift while both are written here.
+    this._speaker.innerHTML = on ? ICON_SOUND : ICON_MUTED;
     this._speaker.setAttribute('aria-pressed', String(on));
   }
 

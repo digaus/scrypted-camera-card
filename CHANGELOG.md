@@ -7,6 +7,19 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.3.1] - 2026-08-03
+
+### Changed
+
+- **The grey off state from 0.3.0 is reverted.** The talk and sound buttons are white
+  again when off, and the sound button is crossed out when muted, as it was before 0.3.0.
+  The microphone keeps a single icon and shows its state through colour only. Both
+  alternatives tried on the way — a crossed-out microphone in 0.2.2, grey buttons in
+  0.3.0 — were rejected on appearance.
+- **The version number moved to the top right**, and now shows only while the card is
+  paused. It used to sit in the bar at the bottom and stayed visible while connecting,
+  where it shared the corner with the loading indicator.
+
 ## [0.3.0] - 2026-08-03
 
 ### Changed

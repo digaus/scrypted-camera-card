@@ -55,6 +55,10 @@ and a hand-written entry gets none — so without it a browser or the Home Assis
 service worker will keep serving the previous bundle after a HACS update, which looks
 exactly like the update not having worked. Bump the value whenever you update.
 
+**To check which version a dashboard is actually running**, look at the top right corner
+of the card while it is not streaming: the version is printed there. That is the quickest
+way to tell a failed update from a cached one.
+
 ### Manual
 
 Build it yourself (see _Build_) or take `scrypted-camera-card.js` from a release,
