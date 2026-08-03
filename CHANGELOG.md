@@ -7,6 +7,24 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.2.2] - 2026-08-03
+
+### Changed
+
+- **The microphone button now shows whether talkback is on**, crossed out when it is off,
+  the way the speaker button already did. Both icons now describe the current state
+  rather than the action a press would perform.
+- **Buttons pulse while the card is waiting.** Pressing talk can take up to ten seconds
+  before the camera's audio channel is actually open — the add-on starts a stream server
+  and a transcoder first — and until now nothing on the button changed in that window, so
+  a press looked like it had been ignored. The play/stop button pulses on the same
+  principle whenever the card is connecting, reconnecting or has stopped trusting the
+  picture, which makes it a second sign of that state next to the loading indicator.
+
+  The icon stays readable throughout, since it is also what says which state the control
+  is in. Buttons remain pressable while pulsing, so a long reconnect backoff can still be
+  cut short. Systems set to reduced motion get a dimmed button instead of a moving one.
+
 ## [0.2.1] - 2026-08-03
 
 ### Fixed

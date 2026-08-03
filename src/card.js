@@ -118,6 +118,17 @@ const STYLES = `
   .bar button:hover { background: rgba(255,255,255,.15); }
   .bar button[aria-pressed="true"] { color: #ff5252; }
   .bar button[hidden] { display: none; }
+  /* Waiting is slow enough here to need saying - starting talkback can take
+     INTERCOM_TIMEOUT, a retry backoff can be 30 s - and the icon has to keep saying
+     which state the control is in while it does, so the opacity moves and the icon
+     stays. One rule for every button in the bar on purpose: the pulse then means the
+     same thing wherever it appears, and it is why nothing below animates a container.
+     Opacity is also the only property that can carry this - the play button stays
+     pressable through the whole wait, so nothing may touch hit-testing.
+     The talk button deliberately does not borrow the top-right spinner instead: that
+     ring is the only sign that the picture is not live (docs/limitations.md), and it
+     and a starting intercom can be true at once. */
+  .bar button.busy { animation: pulse 1.2s ease-in-out infinite; }
   .label { font: 500 12px/1 var(--paper-font-body1_-_font-family, sans-serif);
            letter-spacing: .04em; text-transform: uppercase; opacity: .85; }
   .spacer { flex: 1; }
@@ -138,14 +149,21 @@ const STYLES = `
           filter: drop-shadow(0 1px 2px rgba(0,0,0,.8)); }
   .spin[hidden] { display: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  /* Still a visible ring, just not a moving one. */
-  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+  @keyframes pulse { 50% { opacity: .35; } }
+  /* Still a visible ring and a visibly busy button, just not moving ones. */
+  @media (prefers-reduced-motion: reduce) {
+    .spin { animation: none; }
+    .bar button.busy { animation: none; opacity: .5; }
+  }
   svg { width: 20px; height: 20px; fill: currentColor; }
 `;
 
 const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
 const ICON_STOP = '<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';
+// Both pairs show the current state, not the action a press would perform: crossed
+// out means off, so an idle card renders the crossed-out one of each pair.
 const ICON_MIC = '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>';
+const ICON_MIC_OFF = '<svg viewBox="0 0 24 24"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>';
 const ICON_SOUND = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
 const ICON_MUTED = '<svg viewBox="0 0 24 24"><path d="M4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a9 9 0 003.69-1.81L19.73 21 21 19.73 4.27 3zM12 4L9.91 6.09 12 8.18V4zm7 8c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71z"/></svg>';
 
@@ -324,7 +342,7 @@ class ScryptedCameraCard extends HTMLElement {
             <span class="label"></span>
             <span class="spacer"></span>
             <button class="speaker" title="Sound" aria-pressed="false" hidden>${ICON_MUTED}</button>
-            <button class="mic" title="Talk" aria-pressed="false" hidden>${ICON_MIC}</button>
+            <button class="mic" title="Talk" hidden></button>
           </div>
         </div>
       </ha-card>`;
@@ -342,6 +360,11 @@ class ScryptedCameraCard extends HTMLElement {
     this._toggle.addEventListener('click', () => this._onToggle());
     this._mic.addEventListener('click', () => this._onMic());
     this._speaker.addEventListener('click', () => this._onSpeaker());
+
+    // Both buttons' initial look comes from the same writer as every later one, so the
+    // markup above cannot disagree with it. Nothing can paint in between.
+    this._syncMic(false);
+    this._busy(false);
   }
 
   _applyConfig() {
@@ -371,9 +394,22 @@ class ScryptedCameraCard extends HTMLElement {
    * not as a flash on state changes. With the text withheld until the third failed
    * retry, this ring is the only sign of an outage until then, so nothing may drop
    * it early.
+   *
+   * The play button's pulse rides along here rather than being toggled at the ten-odd
+   * call sites, because the ring and the pulse are one fact - "the card is waiting" -
+   * and a second writer is how one of them would be left behind saying the opposite.
+   * That it therefore also pulses in the stop position, and while the watchdog doubts
+   * an apparently running stream, is the point: the pulse means waiting everywhere
+   * instead of meaning something different on each button.
+   * aria-busy follows for the same reason it does on the talk button - the animation
+   * alone says nothing to a screen reader.
    */
   _busy(on) {
     this._spin.hidden = !on;
+    // Class and attribute only. _syncToggle() owns innerHTML and touches nothing else,
+    // so neither writer can overwrite the other's half of the button.
+    this._toggle.classList.toggle('busy', on);
+    this._toggle.setAttribute('aria-busy', String(on));
   }
 
   /**
@@ -381,9 +417,10 @@ class ScryptedCameraCard extends HTMLElement {
    * _scheduleRetry), so it gets one renderer that derives from state. Setting
    * innerHTML from each of those directly is how the icons would overwrite each
    * other.
-   * It deliberately has no busy face any more: during a wait the button has to stay
-   * a recognisable stop button, because pressing it is how the user cuts a backoff
-   * short, and that backoff can be 30 s long. The spinner says "busy" beside it.
+   * The busy face is deliberately not an icon: during a wait the button has to stay a
+   * recognisable stop button, because pressing it is how the user cuts a backoff short,
+   * and that backoff can be 30 s long. _busy() pulses it instead, which leaves the icon
+   * to mean one thing only - hence no busy branch here.
    */
   _syncToggle() {
     this._toggle.innerHTML = this._showStop ? ICON_STOP : ICON_PLAY;
@@ -989,7 +1026,7 @@ class ScryptedCameraCard extends HTMLElement {
     this._showStop = false;
     this._syncToggle();
     this._mic.hidden = true;
-    this._mic.setAttribute('aria-pressed', 'false');
+    this._syncMic(false);
     this._speaker.hidden = true;
     this._video.muted = true;
     this._syncSpeaker();
@@ -1300,6 +1337,25 @@ class ScryptedCameraCard extends HTMLElement {
     this._speaker.setAttribute('aria-pressed', String(on));
   }
 
+  /**
+   * The speaker reads its state back off the video element; talkback has no such
+   * element to ask, and session.micEnabled is the wrong thing to read - every caller
+   * that turns talkback off runs while it still says true, or with the session
+   * already gone. So the state is passed in, and this stays the only place that
+   * writes the button, which is what keeps the icon and aria-pressed from drifting.
+   *
+   * `starting` follows for the same reason - there is nothing to read it back off
+   * either - and it defaults to off so that every call that ends an attempt clears
+   * the pulse without having to know it exists. aria-busy comes along because the
+   * pulse alone says nothing to a screen reader, and the user just pressed this.
+   */
+  _syncMic(on, starting = false) {
+    this._mic.innerHTML = on ? ICON_MIC : ICON_MIC_OFF;
+    this._mic.setAttribute('aria-pressed', String(on));
+    this._mic.classList.toggle('busy', starting);
+    this._mic.setAttribute('aria-busy', String(starting));
+  }
+
   async _onToggle() {
     // A queued retry counts as running: the button cancels it instead of
     // starting a second attempt next to it.
@@ -1344,6 +1400,10 @@ class ScryptedCameraCard extends HTMLElement {
       return;
     }
 
+    // Before either call, not just before the slow one: setMicrophone() can sit on a
+    // permission prompt of its own, and both are inside the window where the button
+    // would otherwise look untouched. Still the off icon - talkback is not on yet.
+    this._syncMic(false, true);
     try {
       await session.setMicrophone(true);
       const started = await withTimeout(
@@ -1351,8 +1411,11 @@ class ScryptedCameraCard extends HTMLElement {
         INTERCOM_TIMEOUT,
       );
       if (!started) throw new Error('camera did not start talkback');
-      if (this._session !== session) return; // stream was replaced meanwhile
-      this._mic.setAttribute('aria-pressed', 'true');
+      // Stream was replaced meanwhile. The pulse is already gone without this path
+      // touching the button: _play() refuses to build a session while one is set, so
+      // the replacement went through _stop(), which resets the talk button.
+      if (this._session !== session) return;
+      this._syncMic(true);
       this._status('');
     } catch (err) {
       await this._stopTalkback();
@@ -1367,7 +1430,7 @@ class ScryptedCameraCard extends HTMLElement {
   async _stopTalkback() {
     const session = this._session;
     const control = this._control;
-    this._mic.setAttribute('aria-pressed', 'false');
+    this._syncMic(false);
     if (session) await session.setMicrophone(false).catch(() => {});
     if (!control) return;
     await withTimeout(
