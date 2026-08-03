@@ -86,6 +86,13 @@ export const DESTINATIONS = ['local', 'remote', 'low-resolution'];
 // there would drift from what the card actually connects to.
 export const DEFAULT_ADDON = '09e60fb6_scrypted';
 
+// Substituted by esbuild's `define` from package.json - see build.mjs. Never a literal
+// here: package.json is what the release workflow checks against the pushed tag, so
+// that check is only worth anything while this is the only path to the displayed number.
+// The fallback covers a consumer that bundles src/ without that define rather than a
+// normal build, where the substitution always happens.
+const VERSION = typeof __CARD_VERSION__ === 'string' ? __CARD_VERSION__ : 'dev';
+
 // Stacking contract inside .wrap, bottom to top: video (in flow), poster, spinner,
 // message, bar. The bar must stay on top - it was only ever on top by document
 // order, so giving the message a z-index without placing the bar would put a
@@ -116,6 +123,13 @@ const STYLES = `
   .bar button { all: unset; cursor: pointer; padding: 6px; border-radius: 50%;
                 line-height: 0; color: #fff; }
   .bar button:hover { background: rgba(255,255,255,.15); }
+  /* Talk and sound keep one icon in both states, so colour is the whole visual
+     difference between on and off - which is why it is color and not opacity.
+     Opacity already belongs to the pulse below (and to its static reduced-motion
+     substitute), and an off state that also dimmed would make "off" and "waiting"
+     the same picture, on top of leaving the pulse almost no range to move in on an
+     already-dimmed icon. Colour says which state, opacity says waiting or not. */
+  .bar button[aria-pressed="false"] { color: var(--secondary-text-color, #727272); }
   .bar button[aria-pressed="true"] { color: #ff5252; }
   .bar button[hidden] { display: none; }
   /* Waiting is slow enough here to need saying - starting talkback can take
@@ -129,9 +143,26 @@ const STYLES = `
      ring is the only sign that the picture is not live (docs/limitations.md), and it
      and a starting intercom can be true at once. */
   .bar button.busy { animation: pulse 1.2s ease-in-out infinite; }
+  /* Waiting is neither of the two states above, so it takes neither of their colours:
+     a talkback that is starting is not off any more and not on yet. Measured reason as
+     well as an honest one - grey at the pulse's .35 trough is ~1.5:1 against the bar,
+     and the reduced-motion substitute below is a *static* opacity, so the icon would
+     sit permanently near-invisible. On white that same .5 lands back around 5:1.
+     inherit, not another #fff: the bar sets the colour buttons start from, and one
+     literal is enough.
+     MUST STAY BELOW the two [aria-pressed] rules - identical specificity (0,2,1), so
+     source order is the only thing making the busy colour win. Moving it up silently
+     restores the contrast regression. */
+  .bar button.busy { color: inherit; }
   .label { font: 500 12px/1 var(--paper-font-body1_-_font-family, sans-serif);
            letter-spacing: .04em; text-transform: uppercase; opacity: .85; }
   .spacer { flex: 1; }
+  /* Deliberately quieter than .label: the name is what the card is, the version is a
+     footnote for whoever is checking which build they are looking at. Smaller and
+     dimmed rather than a different colour, so it stays legible over a bright scene
+     through the bar's drop-shadow. */
+  .version { font: 500 10px/1 var(--paper-font-body1_-_font-family, sans-serif);
+             letter-spacing: .04em; opacity: .45; }
   .msg { position: absolute; inset: 0; z-index: ${Z_MSG}; pointer-events: none;
          display: flex; align-items: center;
          justify-content: center; padding: 12px; text-align: center;
@@ -160,12 +191,8 @@ const STYLES = `
 
 const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
 const ICON_STOP = '<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';
-// Both pairs show the current state, not the action a press would perform: crossed
-// out means off, so an idle card renders the crossed-out one of each pair.
 const ICON_MIC = '<svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>';
-const ICON_MIC_OFF = '<svg viewBox="0 0 24 24"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>';
 const ICON_SOUND = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
-const ICON_MUTED = '<svg viewBox="0 0 24 24"><path d="M4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a9 9 0 003.69-1.81L19.73 21 21 19.73 4.27 3zM12 4L9.91 6.09 12 8.18V4zm7 8c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71z"/></svg>';
 
 /**
  * Whether a failed hass.callWS() was a refusal rather than a fault. The distinction
@@ -326,6 +353,14 @@ class ScryptedCameraCard extends HTMLElement {
    * Everything here is static. The two values that come from the config are written
    * by _applyConfig() into the elements cached below, which is what lets this run
    * exactly once per card.
+   *
+   * The version is last in the bar so it occupies the right end that _stop() frees when
+   * it hides the sound and talk buttons - inside the existing layout, where it cannot
+   * collide with anything, rather than overlaid on the picture. Its text is written here
+   * and never again, because it cannot change; only its visibility is state, and
+   * _syncToggle() owns that. aria-hidden because it is decoration for a human reading
+   * the card: the label is the card's identity, and a build number announced ahead of
+   * the controls is noise.
    */
   _create() {
     this.attachShadow({ mode: 'open' });
@@ -341,8 +376,9 @@ class ScryptedCameraCard extends HTMLElement {
             <button class="toggle" title="Play/Stop">${ICON_PLAY}</button>
             <span class="label"></span>
             <span class="spacer"></span>
-            <button class="speaker" title="Sound" aria-pressed="false" hidden>${ICON_MUTED}</button>
+            <button class="speaker" title="Sound" aria-pressed="false" hidden>${ICON_SOUND}</button>
             <button class="mic" title="Talk" hidden></button>
+            <span class="version" aria-hidden="true">v${VERSION}</span>
           </div>
         </div>
       </ha-card>`;
@@ -356,6 +392,7 @@ class ScryptedCameraCard extends HTMLElement {
     this._mic = this.shadowRoot.querySelector('.mic');
     this._speaker = this.shadowRoot.querySelector('.speaker');
     this._label = this.shadowRoot.querySelector('.label');
+    this._version = this.shadowRoot.querySelector('.version');
 
     this._toggle.addEventListener('click', () => this._onToggle());
     this._mic.addEventListener('click', () => this._onMic());
@@ -421,9 +458,18 @@ class ScryptedCameraCard extends HTMLElement {
    * recognisable stop button, because pressing it is how the user cuts a backoff short,
    * and that backoff can be 30 s long. _busy() pulses it instead, which leaves the icon
    * to mean one thing only - hence no busy branch here.
+   *
+   * The version rides along here rather than getting a flag of its own, because "the
+   * button offers play" is already the condition it wants - every state that shows play
+   * is a state with no live picture, and it goes away the moment one arrives. That is
+   * the stopped card and the first connect; a retry backoff keeps the stop button (see
+   * _scheduleRetry) and therefore hides the version, which is the right way round
+   * anyway, since that case is holding a picture that was working. A second piece of
+   * state would only be able to disagree with this one.
    */
   _syncToggle() {
     this._toggle.innerHTML = this._showStop ? ICON_STOP : ICON_PLAY;
+    this._version.hidden = this._showStop;
   }
 
   /**
@@ -1333,7 +1379,9 @@ class ScryptedCameraCard extends HTMLElement {
 
   _syncSpeaker() {
     const on = !this._video.muted;
-    this._speaker.innerHTML = on ? ICON_SOUND : ICON_MUTED;
+    // The icon is the same either way; aria-pressed is what says which state it is
+    // in, for the stylesheet and for a screen reader both.
+    this._speaker.innerHTML = ICON_SOUND;
     this._speaker.setAttribute('aria-pressed', String(on));
   }
 
@@ -1342,7 +1390,8 @@ class ScryptedCameraCard extends HTMLElement {
    * element to ask, and session.micEnabled is the wrong thing to read - every caller
    * that turns talkback off runs while it still says true, or with the session
    * already gone. So the state is passed in, and this stays the only place that
-   * writes the button, which is what keeps the icon and aria-pressed from drifting.
+   * writes the button, which is what keeps aria-pressed - the state itself, now that
+   * the icon is the same either way - from drifting from the session.
    *
    * `starting` follows for the same reason - there is nothing to read it back off
    * either - and it defaults to off so that every call that ends an attempt clears
@@ -1350,7 +1399,7 @@ class ScryptedCameraCard extends HTMLElement {
    * pulse alone says nothing to a screen reader, and the user just pressed this.
    */
   _syncMic(on, starting = false) {
-    this._mic.innerHTML = on ? ICON_MIC : ICON_MIC_OFF;
+    this._mic.innerHTML = ICON_MIC;
     this._mic.setAttribute('aria-pressed', String(on));
     this._mic.classList.toggle('busy', starting);
     this._mic.setAttribute('aria-busy', String(starting));

@@ -23,6 +23,19 @@ jobs:
           node-version: 20
           cache: npm
 
+      # The bundle carries package.json's version - build.mjs injects it and the card
+      # shows it - so a tag that disagrees would publish a card that misreports which
+      # release it is, and HACS would serve it under the tag's name. Same spirit as the
+      # build order above: check before anything is built, so a mismatch publishes
+      # nothing at all rather than being caught after the release exists.
+      - name: Check the tag matches package.json
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $pkg (expected tag v$pkg)"
+            exit 1
+          fi
+
       # ci, not install: the lockfile is the record of what was tested.
       - run: npm ci
 

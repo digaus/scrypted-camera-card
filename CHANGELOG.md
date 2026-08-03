@@ -7,6 +7,35 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.3.0] - 2026-08-03
+
+### Changed
+
+- **The talk and sound buttons now grey out when they are off** instead of showing a
+  crossed-out icon. The crossed-out microphone shipped one version earlier and did not
+  look good next to the rest of the bar. Both buttons keep their plain icon in both
+  states and the colour carries the state: grey off, red on.
+
+  The trade-off, since it is a real one: grey and red differ mostly in hue and barely in
+  brightness, so the two states are harder to tell apart than a crossed-out icon was —
+  noticeably so with a red-weak colour vision. The buttons still report their state to
+  screen readers, which is unaffected.
+
+  A button that is *waiting* now turns plain white rather than staying grey, which also
+  keeps it legible on systems set to reduced motion, where the pulse is replaced by a
+  dimmed icon.
+
+### Added
+
+- **The version number is shown in the bottom right while the card is not streaming**,
+  small and light grey. It disappears as soon as the picture is live. Useful for telling
+  at a glance whether a dashboard is actually running the version you just installed —
+  browsers cache this file aggressively.
+
+  It is taken from the build, not typed in, and a release now refuses to publish if the
+  tag and the version in the package do not match, so the number the card shows cannot
+  drift from the release it came from.
+
 ## [0.2.2] - 2026-08-03
 
 ### Changed

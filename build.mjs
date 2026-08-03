@@ -1,7 +1,14 @@
 import esbuild from 'esbuild';
 import { builtinModules } from 'node:module';
+import { readFileSync } from 'node:fs';
 
 const dev = process.argv.includes('--watch');
+
+// package.json is the one place the version lives. Injected here rather than written
+// into src/card.js, because a second literal is how a card ends up displaying a
+// version it is not - and the release workflow checks this same field against the
+// pushed tag, so the number on screen is the number that was released.
+const { version } = JSON.parse(readFileSync(new URL('package.json', import.meta.url), 'utf8'));
 
 /**
  * @scrypted/client targets Node and the browser from one entry point, so esbuild
@@ -79,6 +86,7 @@ const options = {
     'process.arch': '"browser"',
     'process.env.NODE_ENV': JSON.stringify(dev ? 'development' : 'production'),
     global: 'globalThis',
+    __CARD_VERSION__: JSON.stringify(version),
   },
   minify: !dev,
   sourcemap: dev,
