@@ -866,14 +866,31 @@ class ScryptedCameraCard extends HTMLElement {
 
   async _openControl(session) {
     const destination = this._destination;
-    if (!destination) {
-      return this._device.startRTCSignalingSession(session);
-    }
-    // Both are RPC calls that can hang on a dead peer, and withTimeout resolves
-    // undefined rather than rejecting - so each result is checked, and the checks
-    // *throw*. An early return would leave _play() with this._session assigned but
-    // no control, no watchdog and no queued retry: a spinner nothing recovers from.
+    // Every call below is an RPC call that can hang on a dead peer, and withTimeout
+    // resolves undefined rather than rejecting - so each result is checked, and the
+    // checks *throw*. An early return would leave _play() with this._session assigned
+    // but no control, no watchdog and no queued retry: a spinner nothing recovers from.
     // Throwing hands it to _play()'s catch, which is what feeds the retry machinery.
+    // The signaling session is the one that used to be unbounded, and it was the whole
+    // of BUG01: it is also the call the bound can only abandon, not cancel. The plugin
+    // may finish setting the session up afterwards and nothing will ever end it -
+    // _control was never assigned, so there is no handle to call endSession() on. _stop()
+    // closes the local peer connection, which is what makes the remote side fall away;
+    // the session itself lingers until Scrypted expires it.
+    // Each failure names the phase it timed out in, because a bound that is too tight
+    // for a slow network fails on hardware we never see and arrives as a bug report.
+    if (!destination) {
+      const control = await withTimeout(
+        this._device.startRTCSignalingSession(session),
+        STREAM_TIMEOUT,
+      );
+      if (!control) {
+        throw new Error(
+          `the camera did not answer within ${STREAM_TIMEOUT / 1000}s while negotiating the WebRTC connection`,
+        );
+      }
+      return control;
+    }
     const mo = await withTimeout(
       this._device.getVideoStream({ destination }),
       STREAM_TIMEOUT,
@@ -884,7 +901,16 @@ class ScryptedCameraCard extends HTMLElement {
       STREAM_TIMEOUT,
     );
     if (!channel) throw new Error(`no signaling channel for the "${destination}" stream`);
-    return channel.startRTCSignalingSession(session);
+    const control = await withTimeout(
+      channel.startRTCSignalingSession(session),
+      STREAM_TIMEOUT,
+    );
+    if (!control) {
+      throw new Error(
+        `the camera did not answer within ${STREAM_TIMEOUT / 1000}s while negotiating the WebRTC connection for the "${destination}" stream`,
+      );
+    }
+    return control;
   }
 
   /**

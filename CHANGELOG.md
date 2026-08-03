@@ -7,6 +7,24 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.2.1] - 2026-08-03
+
+### Fixed
+
+- **The stream could stop and stay stopped**, showing the loading indicator and the play
+  button together with no message at all — sometimes for hours. Pressing play twice
+  started it again.
+
+  The call that negotiates the WebRTC connection was the one call in that path with no
+  time limit, so a Scrypted peer that accepted the request and then never answered left
+  the card waiting indefinitely. Everything that would have noticed — the stream
+  watchdog, the first-frame check, the session refresh — is only started *after* that
+  call returns, so nothing was watching. It is now bounded like the calls around it, and
+  a timeout goes into the normal reconnect cycle with a message naming the step that
+  timed out.
+- The "Before you install" section of the README rendered as a mangled bullet list in
+  0.2.0.
+
 ## [0.2.0] - 2026-07-31
 
 ### Changed
