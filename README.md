@@ -5,23 +5,27 @@ audio. No iframe, no Scrypted console, no CSS injection, no scraped selectors.
 
 ![The card in Home Assistant's card editor: three lines of configuration on the left, a live stream in the preview on the right](images/example.png)
 
-## Before you install: this card does not work in every setup
+## Before you install: how the card reaches Scrypted
 
-It reaches Scrypted through the **Home Assistant Supervisor ingress API**, which
-means all of the following have to be true:
+The card never talks to Scrypted directly — a browser is not allowed to, see _Why there is
+no `base_url`_ below. It has two routes, and you need one of them.
 
-- Home Assistant is a **Supervised or Home Assistant OS** install. HA Container and
-  HA Core have no Supervisor and cannot serve ingress.
-- Scrypted runs as a **Home Assistant add-on**. A Scrypted in its own Docker
-  container, on a NAS or on another host is not reachable this way.
-**Administrator rights are *not* required.** They used to be, and this is the one
-point people carry over from older versions: the card no longer asks Home Assistant
-for the list of installed add-ons, which was the only admin-gated call it made. A
-non-admin account works.
+**Route 1, `connection: ingress` (the default).** Scrypted runs as a **Home Assistant
+add-on**, on a **Supervised or Home Assistant OS** install. Nothing to configure: the card
+asks the Supervisor for an ingress session over the websocket Home Assistant already
+authenticated, so no token or password ends up in your dashboard.
 
-If either of the two points above does not hold, this card is the wrong tool today —
-there is no option to point it at a Scrypted URL directly. That is a known
-limitation, not an oversight.
+**Route 2, `connection: integration`.** Scrypted runs wherever you like — its own container,
+a NAS, another host — and you install
+[`koush/ha_scrypted`](https://github.com/koush/ha_scrypted) through HACS, pointed at that
+Scrypted. The card then goes through that integration's proxy, which runs on the Home
+Assistant side. This also works on **HA Container and HA Core**, which have no Supervisor.
+The cost: everything the card sees goes through the account that integration is configured
+with, so `username` / `password` are refused in this mode — see _Card config_.
+
+**Administrator rights are *not* required** on either route. They used to be, and this is the
+point people carry over from older versions: the card no longer asks Home Assistant for the
+list of installed add-ons, which was the only admin-gated call it made.
 
 Tested against Scrypted 0.143.0. Scrypted's RPC and `RTCSignalingSession` are
 internal interfaces rather than a documented public API, so a Scrypted update can
@@ -76,10 +80,15 @@ the file.
 
 ## How it works
 
-1. Gets a Supervisor ingress session over the **existing authenticated HA
-   websocket** (`hass.callWS`), so no access token goes into the dashboard config.
-2. Connects `@scrypted/client` against the ingress base URL. The Scrypted add-on
-   authenticates the ingress user, so no Scrypted credentials are needed either.
+1. Resolves a base URL on the Home Assistant origin. On the **ingress** route that is a
+   Supervisor ingress session obtained over the **existing authenticated HA websocket**
+   (`hass.callWS`), so no access token goes into the dashboard config. On the
+   **integration** route it is the proxy path the `koush/ha_scrypted` integration publishes
+   on its sidebar panel, re-read on every connect because the token in it changes whenever
+   that integration reloads.
+2. Connects `@scrypted/client` against that base URL. Both routes answer `/login` with an
+   authorization without being given credentials — the add-on authenticates the ingress
+   user, the proxy authenticates server-side — so no Scrypted credentials are needed either.
 3. Implements `RTCSignalingSession` in the browser (`src/signaling.js`) and hands
    it to `device.startRTCSignalingSession()`. The plugin drives the exchange.
 4. Attaches the resulting stream to a plain `<video>`.
@@ -146,9 +155,27 @@ name: Eingang          # optional, shown in the control bar
 aspect_ratio: 16 / 9   # optional, any CSS aspect-ratio value
 autoplay: false        # optional, default false - see below
 # destination: low-resolution  # optional, see below
-# addon: 09e60fb6_scrypted   # only if your add-on's slug differs from this default
-# username / password        # only if your Scrypted does not trust the ingress user
+# connection: integration    # optional, default ingress - see below
+# addon: 09e60fb6_scrypted   # ingress only, and only if your add-on's slug differs
+# integration_title: Scrypted  # integration only, and only with several entries
+# username / password        # ingress only, see below
 ```
+
+**`connection`** selects the route from _Before you install_. `ingress` is the default and
+needs nothing else. `integration` requires the
+[`koush/ha_scrypted`](https://github.com/koush/ha_scrypted) integration installed and
+configured with your Scrypted host; the card then finds its proxy by itself, and there is no
+URL to enter.
+
+`username` / `password` are **refused** with `connection: integration`, and that is
+deliberate rather than an omission: the proxy replaces the authorization header on every
+request with the integration's own, so credentials on the card would look like they scope it
+and scope nothing. If you need per-card scoping, use the ingress route.
+
+**`integration_title`** picks between several Scrypted integration entries. It matches the
+**Name** of the entry — not the host, which is what Home Assistant shows as the entry's title
+in its integrations list. The name defaults to `Scrypted` for every entry, so if you have two,
+rename one first; two entries with the same name cannot be told apart.
 
 **`autoplay`** decides only whether the card starts streaming when it first
 loads. Default `false`: the card connects to Scrypted, shows a still image and
@@ -161,8 +188,8 @@ it, and self-healing resumes it after an add-on restart, a dropped websocket or 
 network outage regardless of this setting. Pressing stop is what revokes that
 intent.
 
-**`username` / `password`** are optional and do two different things depending on why
-you set them.
+**`username` / `password`** are optional, apply to the **ingress** route only, and do two
+different things depending on why you set them.
 
 Left empty, the card connects as whoever the Scrypted add-on decides an ingress
 request is — usually an account with full access. Filled in, the card authenticates
@@ -178,6 +205,21 @@ Two things to know before you do:
 - **They do not restrict Scrypted itself.** They scope what this card displays. A Home
   Assistant user who can load the card can also open Scrypted's own interface through
   the ingress URL, whatever the card authenticated as. See _Known risks_.
+
+### Why there is no `base_url`
+
+Pointing the card straight at `https://scrypted.local:10443` looks like the obvious option and
+is not possible from a dashboard. Measured, not assumed: Scrypted answers the CORS preflight
+**without** an `Access-Control-Allow-Origin` header, so the browser drops the request before it
+is sent — and `@scrypted/client` hardcodes `withCredentials: true`, which puts every request in
+the credentialed mode where even a wildcard would be rejected. Nothing in a card can change
+either half.
+
+Both supported routes exist to avoid that: they end at a URL on the Home Assistant origin, so
+there is no cross-origin request at all. If you already run a reverse proxy in front of Home
+Assistant, serving Scrypted under a path on the *same* origin would work for the same reason —
+that is not implemented as an option here, and the integration route covers it without asking
+you to configure anything.
 
 **`destination`** picks which of the camera's streams to pull. Accepted values are
 `local`, `remote` and `low-resolution` — the same names Scrypted offers in its own
@@ -246,6 +288,18 @@ console and no card at all. The card uses that door rather than opening it, and
 nothing it can do would close it. If someone should not reach Scrypted, that boundary
 belongs in Scrypted's own user management, or in not giving them a Home Assistant
 account — a dashboard card cannot enforce it.
+
+**The integration route depends on another project.** `connection: integration` relies on
+`koush/ha_scrypted` keeping its proxy at `/api/scrypted/<token>/` and publishing it on its
+sidebar panel. That is a third-party repository this card does not control, so a change there
+breaks this route — the ingress route is unaffected, and the card's error messages name the
+integration so it is clear whose contract broke.
+
+Two properties of that route to know before choosing it: everything goes through the account
+the integration is configured with, so per-card scoping via `username` / `password` is not
+available; and the proxy view requires no Home Assistant authentication and carries its
+bearer token in the URL path, so it is a second instance of the risk above rather than an
+additional protection.
 
 **Verify first.** `getDeviceById` / `getDeviceByName` and the exact
 `connectScryptedClient` option set were taken from the current Scrypted sources.

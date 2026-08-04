@@ -7,12 +7,7 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
-## [0.4.0-beta.1] - 2026-08-04
-
-**A test build, published as a prerelease.** It is not offered by HACS unless beta versions
-are enabled for this repository, and it should not be used on a dashboard you rely on: the
-new mode below has never streamed a picture, and the change to reach it touched code the
-existing connection path runs through.
+## [0.4.0] - 2026-08-04
 
 ### Added
 
@@ -35,8 +30,12 @@ existing connection path runs through.
   the **Name** of the entry, whose default is `Scrypted` for all of them — two entries left
   at the default cannot be told apart, and one of them has to be renamed.
 
-  No editor fields yet; set it in YAML. The visual editor and the documentation follow once
-  this build has been tested.
+  Both options are in the visual editor. A connection that cannot be resolved — no such
+  integration, or an ambiguous one — retries a few times and then stops with a message
+  naming what to change, rather than retrying for as long as the page stays open. It picks
+  itself up again when the integration appears, without a reload.
+
+  Released as `0.4.0-beta.1` first and tested on that build before this release.
 
 ## [0.3.1] - 2026-08-03
 
