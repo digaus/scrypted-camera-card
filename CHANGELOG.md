@@ -7,6 +7,40 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.5.0] - 2026-08-04
+
+### Changed
+
+- **The card now picks how it reaches Scrypted by itself, and the three options from 0.4.0
+  become one.** The rule:
+
+  > The `koush/ha_scrypted` integration's proxy when that integration is installed. Otherwise
+  > the Scrypted add-on. If Scrypted `username`/`password` are set, always the add-on — that
+  > is the only route where they mean anything. If the proxy is installed but cannot be
+  > resolved, the add-on is tried anyway before the card gives up.
+
+  So a Scrypted outside the add-on needs nothing in the card configuration at all: install the
+  integration and the card uses it. Which route it took is shown next to the version number
+  while the card is paused — `v0.5.0 · integration` or `· ingress`.
+
+- **`connection` is gone**, hours after 0.4.0 introduced it. Three keys for one question was
+  clutter, and detection turned out to need no switch: the presence of the integration's
+  sidebar panel is a local read, not a network call that has to fail first. A leftover
+  `connection:` in a config is ignored.
+
+- **`addon` and `integration_title` become one key, `source`.** It names the add-on slug or the
+  integration entry's Name, depending on the route the card chose — which is unambiguous
+  because the route is decided first. **You normally leave it empty**; it is no longer
+  prefilled with the add-on's default slug, because that default applies to only one of the
+  two routes.
+
+  **`addon` still works** as a deprecated alias, so existing configurations keep running. The
+  visual editor rewrites it to `source` the next time the card is edited. `integration_title`
+  is dropped and ignored.
+
+- Setting `username`/`password` no longer produces an error on the integration route; it
+  selects the add-on route instead, which is what those values were asking for.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added

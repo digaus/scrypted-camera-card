@@ -76,33 +76,35 @@ const RTC_SIGNALING_CHANNEL = 'x-scrypted/x-scrypted-rtc-signaling-channel';
 // validation in setConfig() and offer a value the card then refuses.
 export const DESTINATIONS = ['local', 'remote', 'low-resolution'];
 
-// Accepted values for the `connection` option - where _start() takes its base URL
-// from. `ingress` asks the Supervisor for the add-on's ingress path and is what the
-// card has always done. `integration` resolves the HTTP proxy that the
-// koush/ha_scrypted integration publishes, which is the only way to a Scrypted that is
-// not the add-on: a browser cannot reach one directly, because Scrypted answers the
-// preflight without an Access-Control-Allow-Origin header and @scrypted/client
-// hardcodes withCredentials - which rules out a wildcard too. Measured, see PLAN_F08.
-// The first entry is the default, and everything below the base URL is shared: the
-// proxy authenticates server-side and hands back the same login shape ingress does.
-// Exported for the editor's dropdown for the same reason DESTINATIONS is: a second
-// literal there would drift from the validation in setConfig() and offer a value the
-// card then refuses.
-export const CONNECTIONS = ['ingress', 'integration'];
+// The two routes _start() can take its base URL from - see _pickRoute(), which is the
+// only thing that decides between them and the only thing allowed to. `ingress` asks the
+// Supervisor for the add-on's ingress path and is what the card has always done.
+// `integration` resolves the HTTP proxy that the koush/ha_scrypted integration
+// publishes, which is the only way to a Scrypted that is not the add-on: a browser
+// cannot reach one directly, because Scrypted answers the preflight without an
+// Access-Control-Allow-Origin header and @scrypted/client hardcodes withCredentials -
+// which rules out a wildcard too. Measured, see PLAN_F08. Everything below the base URL
+// is shared: the proxy authenticates server-side and hands back the same login shape
+// ingress does.
+// Not a config option and no longer an exported list: 0.4.0's `connection` key is gone,
+// because the card can read the one fact that decides this for itself.
 
 // What the integration names its panel: `frontend_url_path=f"{DOMAIN}_{token}"` with
 // DOMAIN = "scrypted", so the prefix is what identifies a candidate and the remainder
 // is the proxy's path token - which is *not* the bearer token, the two differ.
 const PANEL_PREFIX = 'scrypted_';
 
-// Which add-on the card talks to when `addon` is not configured. Not a guess:
-// measured across several Home Assistant installations, the slug is always this,
-// because the prefix derives from the add-on repository rather than the installation.
+// Which add-on the card talks to when `source` names none. Not a guess: measured across
+// several Home Assistant installations, the slug is always this, because the prefix
+// derives from the add-on repository rather than the installation.
 // A default here is what removes the `/addons` list call that used to resolve it - the
 // one Supervisor call Home Assistant refuses to a non-admin user (measured on
 // 2026.7.4), and therefore the one thing that made non-admin support a special case.
-// Exported for the editor, which shows it as the field's default: a second literal
-// there would drift from what the card actually connects to.
+// Applied by _ingressBaseUrl() and nowhere else: it is one route's default, and since
+// 0.5.0 the field it defaults is shared with the other route. That is also why the
+// editor no longer prefills it - it used to show this string as its field's default, and
+// a default that is meaningless on the integration route must not be written into a
+// shared key. Still exported, though nothing outside this module reads it now.
 export const DEFAULT_ADDON = '09e60fb6_scrypted';
 
 // Substituted by esbuild's `define` from package.json - see build.mjs. Never a literal
@@ -289,6 +291,12 @@ class ScryptedCameraCard extends HTMLElement {
     // from - see _rearmResolver().
     this._panelSig = null;
     this._panelsSeen = null;
+    // The route the current connect attempt is using, shown next to the version. Written
+    // in _start() from _pickRoute() - the *attempted* route, so a card that never got a
+    // client can still say which door it tried - corrected by the fallback in _start()
+    // when the add-on is what answered, and cleared in _dropClient(). Null before the
+    // first attempt, which is when the label prints the version alone.
+    this._route = null;
     this._stopped = false;      // user pressed stop - do not self-heal
     // Whether a stream is wanted. Seeded from `autoplay` in setConfig() and owned
     // by the card afterwards. `autoplay` must not be read again: _start() is
@@ -333,11 +341,17 @@ class ScryptedCameraCard extends HTMLElement {
     }
     const first = !this._config;
     this._config = { autoplay: false, aspect_ratio: '16 / 9', ...config };
-    // Always a slug from here on, so _ingressBaseUrl() never has to look one up - see
-    // DEFAULT_ADDON. Applied after the spread rather than as a default inside it,
-    // because hand-written YAML can carry `addon:` with nothing behind it, and an empty
-    // slug would send the card off to ask the Supervisor about an add-on called "".
-    this._config.addon = this._config.addon || DEFAULT_ADDON;
+    // The one name the card is given, read by whichever route _pickRoute() takes: an
+    // integration entry's Name, or an add-on slug. Resolved from the *incoming* config
+    // and not from this._config, because `addon` is only a deprecated alias for it: it
+    // applies when `source` is absent as a key, not when it is falsy. A hand-written
+    // `source: ''` is a deliberate "use the default for whichever route you take" and a
+    // leftover `addon` must not override it - which is also the case an eager default
+    // here used to cover, and no longer may: a default that belongs to one route cannot
+    // be written into a field the other one reads. Empty means "the route decides", and
+    // each route has its own answer - _ingressBaseUrl() falls back to DEFAULT_ADDON,
+    // _proxyBaseUrl() accepts a single panel.
+    this._source = 'source' in config ? (config.source || '') : (config.addon || '');
     // The first call only, and deliberately not "apply the config": from here on
     // _wantStream is the card's, for the reason spelled out in the constructor. HA's
     // visual editor calls setConfig() on every keystroke, so re-seeding it would let a
@@ -353,28 +367,16 @@ class ScryptedCameraCard extends HTMLElement {
       ? `unknown destination "${this._destination}" - use one of ${DESTINATIONS.join(', ')}`
       : null;
     // Kept in its own field rather than folded into _destinationError, which has two
-    // writers already: a connection error must not be able to overwrite a destination
-    // one, or the user fixes the sentence they can see and the card still refuses.
-    // Both are genuine card configuration, so both are permanent - unlike every failure
-    // _proxyBaseUrl() produces, which describes the environment instead.
-    const connection = this._config.connection || CONNECTIONS[0];
+    // writers already: a route error must not be able to overwrite a destination one, or
+    // the user fixes the sentence they can see and the card still refuses.
+    // Nothing writes it since 0.5.0. There is no way left to configure the route wrongly:
+    // 0.4.0 refused an unknown `connection` value and refused credentials on the
+    // integration route, and _pickRoute() has replaced both - the route is derived, and
+    // credentials select the only route they mean anything on instead of clashing with
+    // one. The field and _start()'s read of it stay because that is the slot for a
+    // permanent, non-retrying route error, and a future one belongs here rather than in
+    // _destinationError.
     this._connectionError = null;
-    if (!CONNECTIONS.includes(connection)) {
-      this._connectionError =
-        `unknown connection "${connection}" - use one of ${CONNECTIONS.join(', ')}`;
-    } else if (connection === 'integration' && (this._config.username || this._config.password)) {
-      // Refused, not ignored, and the message names the mechanism rather than a doubt:
-      // with credentials set the client puts the login authorization into the primary
-      // socket's headers, and the integration's proxy overwrites that header on every
-      // request and websocket it forwards. The RPC connection would therefore run as
-      // the *integration's* Scrypted account while this config claims otherwise - a
-      // scoping guarantee that is not one. Scoping by credentials exists on the ingress
-      // path only.
-      this._connectionError = 'username/password cannot scope a card in'
-        + ' "connection: integration" - the integration\'s proxy replaces the login'
-        + ' authorization with its own account on every request, so remove them or use'
-        + ' "connection: ingress"';
-    }
     // Created once, updated ever after. Replacing the shadow DOM per keystroke is what
     // used to kill a live picture: the replacement <video> carries no srcObject, and
     // onTrack only assigns one for a MediaStream it created itself, so nothing repaired
@@ -436,8 +438,12 @@ class ScryptedCameraCard extends HTMLElement {
    *
    * The version sits over the picture in the spinner's corner, not at the right end of
    * the bar, and the two share that corner because they can never be visible together -
-   * see .version and _syncVersion(). Its text is written here and never again, because
-   * it cannot change; only its visibility is state, and _syncVersion() owns that.
+   * see .version and _syncVersion(). It used to be written here and never again, because
+   * a build number cannot change; since 0.5.0 it also carries the route the card took,
+   * which can, so both its text and its visibility are state and _syncVersion() owns
+   * both. Left empty in the markup for the same reason the two buttons are: the first
+   * paint comes from the same writer as every later one - _create() ends with _busy(),
+   * which calls _syncVersion() - so this markup cannot disagree with it.
    * aria-hidden because it is decoration for a human reading the card: the label is the
    * card's identity, and a build number announced ahead of the controls is noise.
    */
@@ -450,7 +456,7 @@ class ScryptedCameraCard extends HTMLElement {
           <video playsinline muted></video>
           <img class="poster" alt="" hidden>
           <div class="spin" role="status" aria-label="Loading" hidden></div>
-          <span class="version" aria-hidden="true">v${VERSION}</span>
+          <span class="version" aria-hidden="true"></span>
           <div class="msg" hidden></div>
           <div class="bar">
             <button class="toggle" title="Play/Stop">${ICON_PLAY}</button>
@@ -554,11 +560,18 @@ class ScryptedCameraCard extends HTMLElement {
   }
 
   /**
-   * The only writer of the version's visibility. Two facts decide it and they arrive
-   * from different places - the button's face from _syncToggle(), the wait from _busy() -
-   * so both call this and neither touches .hidden. Same shape as _syncStatus() and for
-   * the same reason: one property written from two sites is one property that will end
-   * up saying two things, and this file has already paid for that twice.
+   * The only writer of the version label - its text as well as its visibility, since the
+   * text stopped being constant: `v<version> · <route>` names the door the last attempt
+   * used, which is the whole diagnosis story for a card that can now pick its route
+   * itself, and the route the card *tried* is exactly what a stranger cannot otherwise
+   * guess. Before the first attempt there is no route and the version stands alone.
+   *
+   * Two facts decide the visibility and they arrive from different places - the button's
+   * face from _syncToggle(), the wait from _busy() - so both call this and neither touches
+   * .hidden. Same shape as _syncStatus() and for the same reason: one property written
+   * from two sites is one property that will end up saying two things, and this file has
+   * already paid for that twice. _start() and _dropClient() write _route and call here
+   * for the same reason.
    *
    * Shown in the paused state only, which is "play is offered *and* nothing is in
    * flight". _showStop alone was not that: a first connect still offers play, so the
@@ -573,6 +586,7 @@ class ScryptedCameraCard extends HTMLElement {
    * sets it before calling here.
    */
   _syncVersion() {
+    this._version.textContent = this._route ? `v${VERSION} · ${this._route}` : `v${VERSION}`;
     this._version.hidden = this._showStop || this._waiting;
   }
 
@@ -677,16 +691,21 @@ class ScryptedCameraCard extends HTMLElement {
    * are not among them: _applyConfig() writes those into the existing DOM and no
    * reconnect is involved.
    *
-   * `connection` and `integration_title` are: they decide which base URL the client was
-   * built against, and leaving them out would make switching mode in the visual editor
-   * do nothing until the page is reloaded - indistinguishable from the feature not
-   * working. `integration_title` is also the fix for a latched resolver, which is why
-   * _reconfigure() clears its counter.
+   * `source` is, because whichever route is taken resolves its base URL from it - and it
+   * is also the fix for a latched resolver, which is why _reconfigure() clears that
+   * counter. The *resolved* `this._source`, not `c.source`: keying on the raw key would
+   * make an edit of a legacy `addon` value produce no reconnect, and carrying both keys
+   * would tear a live stream down when the editor drops the alias from a config whose
+   * value did not change.
+   *
+   * The route itself is not in here and cannot be: installing the integration changes
+   * the route without changing the config, so no key would notice. It does not need to -
+   * see _rearmResolver() for a latched card, and a card that is streaming has no reason
+   * to be torn down for a door it is no longer using.
    */
   _connectionKey() {
     const c = this._config;
-    return JSON.stringify([c.device, c.addon, c.destination, c.username, c.password,
-      c.connection, c.integration_title]);
+    return JSON.stringify([c.device, this._source, c.destination, c.username, c.password]);
   }
 
   /**
@@ -720,9 +739,9 @@ class ScryptedCameraCard extends HTMLElement {
     if (this._stopped) return;
     this._retries = 0;
     // The resolver's bound too, and this is the site neither of the other two clearing
-    // mechanisms covers: `integration_title` is part of _connectionKey(), so editing it
-    // is a first-class fix for a latched card, and this path reaches _start() without
-    // going through `set hass` or the play button.
+    // mechanisms covers: `source` is part of _connectionKey(), so editing it is a
+    // first-class fix for a latched card, and this path reaches _start() without going
+    // through `set hass` or the play button.
     this._resolverFailures = 0;
     await this._start();
   }
@@ -760,16 +779,45 @@ class ScryptedCameraCard extends HTMLElement {
       // the checks throw - into the catch below, and from there into the normal
       // retry cycle. No new error path is needed.
       let baseUrl;
-      if (this._config.connection === 'integration') {
-        // Neither bounded nor guarded, and both are deliberate: this is a read of
-        // hass.panels with no network call behind it, so there is nothing for
-        // withTimeout to bound, and it either throws or returns a string, so there is
-        // no falsy result to catch. Every other await in this method is bounded, which
-        // is why the asymmetry is written down rather than left to look like an
-        // oversight.
-        baseUrl = this._proxyBaseUrl();
+      // The attempted route, recorded before either resolver runs rather than on success:
+      // a card that never gets a client is exactly the card whose owner needs to know
+      // which door it tried, and that is also the only state where the label is visible.
+      // _syncVersion() is called rather than left to the next state change - the label is
+      // hidden behind _busy(true) right now, but nothing may depend on that.
+      const route = this._pickRoute();
+      this._route = route;
+      this._syncVersion();
+      if (route === 'integration') {
+        try {
+          // Neither bounded nor guarded, and both are deliberate: this is a read of
+          // hass.panels with no network call behind it, so there is nothing for
+          // withTimeout to bound, and it either throws or returns a string, so there is
+          // no falsy result to catch. Every other await in this method is bounded, which
+          // is why the asymmetry is written down rather than left to look like an
+          // oversight.
+          baseUrl = this._proxyBaseUrl();
+        } catch (proxyErr) {
+          // The fallback, and only in this direction. _pickRoute() chose the proxy
+          // because a panel exists, which says nothing about whether that entry can
+          // serve this camera - and the add-on may well still be installed, so a working
+          // card that says which door it used beats a dead one with a precise complaint.
+          // The reverse fallback would be meaningless: ingress is only chosen when there
+          // is no panel at all or credentials are set, and neither is fixed by the proxy.
+          // Logged, not shown: on an otherwise working card this is the only trace that
+          // the integration entry is broken, and PLAN_F09 accepts that quiet degradation
+          // deliberately.
+          console.warn('[scrypted-card] the koush/ha_scrypted proxy could not be'
+            + ' resolved, falling back to the Scrypted add-on', proxyErr);
+          baseUrl = await this._ingressFallback(gen, proxyErr);
+          // The route that actually produced the base URL, so a fallen-back card reads
+          // "· ingress". Only on success: when both fail, the label keeps the attempted
+          // route and the message below names both attempts.
+          this._route = 'ingress';
+          this._syncVersion();
+        }
         // "Consecutive" lives here: a resolve that worked ends the run, and only the
-        // failures that follow one another are allowed to reach the bound.
+        // failures that follow one another are allowed to reach the bound. The fallback
+        // counts as worked - the card has a base URL and is about to connect.
         this._resolverFailures = 0;
       } else {
         baseUrl = await withTimeout(this._ingressBaseUrl(gen), INGRESS_TIMEOUT);
@@ -812,8 +860,14 @@ class ScryptedCameraCard extends HTMLElement {
           (late) => { try { late.disconnect(); } catch { /* already gone */ } },
           () => { /* it failed on its own - nothing to dispose */ },
         );
+        // Names the route instead of the add-on: this connect is the one thing both
+        // routes share, and on the integration route there is no add-on in the picture
+        // at all - a card that blamed one would send its owner to restart the wrong
+        // thing. _route, not `route`, so a fallen-back attempt blames the add-on it
+        // actually reached.
         throw new Error(
-          `the Scrypted add-on did not answer within ${CONNECT_TIMEOUT / 1000}s`,
+          `Scrypted did not answer within ${CONNECT_TIMEOUT / 1000}s`
+          + ` on the ${this._route} route`,
         );
       }
       this._client = client;
@@ -923,14 +977,81 @@ class ScryptedCameraCard extends HTMLElement {
   }
 
   /**
+   * Which of the two routes this attempt takes. The single place the rule lives, and the
+   * only thing allowed to branch on it - the card, the README and the editor's helper all
+   * state the same rule, so it has to be true in exactly one place here:
+   *
+   *   The card uses the integration's proxy when that integration is installed. Otherwise
+   *   the add-on. If `username`/`password` are set, always the add-on - that is the only
+   *   route where they mean anything. If the proxy is installed but cannot be resolved,
+   *   the add-on is tried anyway before the card gives up.
+   *
+   * The last sentence is _start()'s, not this method's: a route can only be picked before
+   * it is tried, and the fallback is what happens after.
+   *
+   * Credentials first, and they decide rather than clash: the integration's proxy replaces
+   * the login authorization with its own account on every request it forwards, so a card
+   * that fills them in to scope itself would be silently unscoped on that route. 0.4.0
+   * refused the combination; choosing the route they work on honours the same intent
+   * without a message. That someone with only the integration installed now gets an
+   * ingress failure instead of a silent unscoped picture is the deliberate direction.
+   *
+   * A local read of hass.panels, no network call and nothing to time out, which is what
+   * makes this safe to call per attempt - and cheap enough for _rearmResolver() to call on
+   * every hass update. `this._config` may be absent: `set hass` can arrive before
+   * setConfig().
+   */
+  _pickRoute() {
+    const c = this._config || {};
+    if (c.username || c.password) return 'ingress';
+    return this._scryptedPanels().length ? 'integration' : 'ingress';
+  }
+
+  /**
+   * The second half of the fallback: ingress, tried after the proxy could not be
+   * resolved. Separate from _ingressBaseUrl() only because of what it does when it
+   * fails - the error has to name *both* attempts, or the user reads a complaint about
+   * an add-on they never asked the card to use and has no idea the proxy was involved.
+   *
+   * Marked as a resolver failure even though it ends on the ingress side. That keeps the
+   * bound reachable: without the mark this path would retry every 30 s for the life of
+   * the page, which is the storm _start()'s refusal branch exists to prevent, and it
+   * would also leave _latchResolver() as machinery nothing can reach.
+   */
+  async _ingressFallback(gen, proxyErr) {
+    const both = (why) => resolverError(
+      `${why} - and the koush/ha_scrypted integration could not be used either`
+      + ` (${String(proxyErr.message || proxyErr)})`,
+    );
+    let baseUrl;
+    try {
+      baseUrl = await withTimeout(this._ingressBaseUrl(gen), INGRESS_TIMEOUT);
+    } catch (ingressErr) {
+      // A refusal keeps its code, because _start() classifies by it and wrapping would
+      // hide that - the same reason _ingressBaseUrl() lets refusals through untouched.
+      if (isRefusal(ingressErr)) throw ingressErr;
+      throw both(String(ingressErr.message || ingressErr));
+    }
+    if (!baseUrl) {
+      throw both(
+        `Home Assistant did not answer within ${INGRESS_TIMEOUT / 1000}s while opening`
+        + ' the ingress session',
+      );
+    }
+    return baseUrl;
+  }
+
+  /**
    * Reuses the authenticated HA websocket instead of a hand-rolled connection,
    * so no long-lived access token has to live in the dashboard config.
    */
   async _ingressBaseUrl(gen) {
     const ws = (msg) => this._hass.callWS(msg);
-    // setConfig() guarantees a value, so nothing here resolves one: the list call that
-    // used to do that was the card's only admin-gated call - see DEFAULT_ADDON.
-    const slug = this._config.addon;
+    // This route's own default, applied here and nowhere else: `source` is shared with the
+    // integration route, so nothing earlier may fill it in with a slug - see
+    // DEFAULT_ADDON and setConfig(). Still never resolved by asking the Supervisor: the
+    // list call that used to do that was the card's only admin-gated call.
+    const slug = this._source || DEFAULT_ADDON;
 
     const start = async () => {
       const { session } = await ws({
@@ -988,7 +1109,7 @@ class ScryptedCameraCard extends HTMLElement {
       if (isRefusal(err)) throw err;
       throw new Error(
         `add-on "${slug}" could not be read (${String(err.message || err)})`
-        + ' - set "addon" in the card config to the slug of your Scrypted add-on',
+        + ' - set "source" in the card config to the slug of your Scrypted add-on',
       );
     });
     if (!info.ingress_entry) throw new Error(`add-on ${slug} has no ingress entry`);
@@ -1028,8 +1149,8 @@ class ScryptedCameraCard extends HTMLElement {
    */
   _proxyBaseUrl() {
     const panels = this._scryptedPanels();
-    const wanted = this._config.integration_title;
-    // A configured title never falls back to "the only panel". While one of two entries
+    const wanted = this._source;
+    // A configured name never falls back to "the only panel". While one of two entries
     // reloads, the resolver sees exactly one panel and cannot tell that from a
     // single-entry installation - and silently connecting to the other Scrypted is the
     // worst outcome available here: with a same-named camera it is a picture from the
@@ -1038,17 +1159,28 @@ class ScryptedCameraCard extends HTMLElement {
     if (!matched.length) {
       // Both texts name the integration, so a stranger can tell whose contract broke -
       // this is a third-party repository and the ingress path does not depend on it.
+      // The first names *both* readings of a wrong value, which is what one shared field
+      // costs: a leftover add-on slug from before 0.5.0 lands here looking like an entry
+      // name, and a user who only hears "no entry is called that" has no way to see why
+      // the slug they can read in their own YAML is being used as one.
       throw resolverError(wanted
-        ? `no Scrypted panel named "${wanted}" - "integration_title" is the *Name* of the`
+        ? `no Scrypted panel named "${wanted}" - "source" is the *Name* of the`
           + ' koush/ha_scrypted integration entry, not the host its integrations entry is'
-          + ' titled with'
-        : 'no Scrypted panel found - "connection: integration" needs the koush/ha_scrypted'
-          + ' integration installed and configured');
+          + ' titled with. If that is an add-on slug, it is not being used as one: the'
+          + ' card takes the integration while it is installed, and only names an add-on'
+          + ' when it is not'
+        // Unreachable as an error and kept as a guard: _pickRoute() only returns
+        // 'integration' when _scryptedPanels() is non-empty and nothing awaits between
+        // that call and this one, so an empty set here means the invariant broke, not
+        // that the user forgot to install anything. The sentence says so rather than
+        // sending them after a prerequisite they already have.
+        : 'no Scrypted panel found although the card had just seen one - reload the page,'
+          + ' and report this if it persists');
     }
     if (matched.length > 1) {
       // Two entries left at the default name cannot be told apart by this card at all:
       // CONF_NAME defaults to "Scrypted" for every entry, so panel.title is the same
-      // string for both and no value of integration_title selects one. The fix is on the
+      // string for both and no value of `source` selects one. The fix is on the
       // integration's side, and the message has to say that rather than implying the card
       // could resolve it.
       throw resolverError(wanted
@@ -1056,8 +1188,8 @@ class ScryptedCameraCard extends HTMLElement {
           + ' koush/ha_scrypted entries, the card cannot tell two identically named ones'
           + ' apart'
         : `${matched.length} Scrypted panels found (${matched.map((p) => p.title).join(', ')})`
-          + ' - set "integration_title" to the Name of the koush/ha_scrypted entry this'
-          + ' card should use, and rename one of the entries first if they read the same');
+          + ' - set "source" to the Name of the koush/ha_scrypted entry this card should'
+          + ' use, and rename one of the entries first if they read the same');
     }
 
     const panel = matched[0];
@@ -1104,9 +1236,15 @@ class ScryptedCameraCard extends HTMLElement {
    * resolver failure.
    */
   _rearmResolver() {
-    // Scoped to the mode. This setter fires on every Home Assistant state update, on
+    // Scoped to the route. This setter fires on every Home Assistant state update, on
     // every ingress card too, and the default path has to stay byte for byte what it was.
-    if (this._config?.connection !== 'integration') return;
+    //
+    // Derived, not read off the config: 0.4.0 gated this on `connection === 'integration'`,
+    // and leaving that in place while deleting the key would have made the expression
+    // permanently true-by-absence in the wrong direction - the re-arm would return here on
+    // every update and a latched card could never revive. That failure is invisible, which
+    // is why it is written down rather than trusted to be obvious.
+    if (this._pickRoute() !== 'integration') return;
     const panels = this._hass.panels;
     // Identity first, because it is free. If Home Assistant turns out to hand out a
     // fresh object per update this degenerates to computing the signature every time,
@@ -1143,6 +1281,11 @@ class ScryptedCameraCard extends HTMLElement {
     }
     this._clientDead = false;
     this._device = null;
+    // The label must not outlive what it describes. _reconfigure() drops the client and
+    // then returns early on a stopped card, so without this a card the user stopped keeps
+    // advertising the route a config it no longer has once chose.
+    this._route = null;
+    this._syncVersion();
   }
 
   // --- streaming ----------------------------------------------------------

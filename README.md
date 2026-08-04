@@ -8,20 +8,27 @@ audio. No iframe, no Scrypted console, no CSS injection, no scraped selectors.
 ## Before you install: how the card reaches Scrypted
 
 The card never talks to Scrypted directly — a browser is not allowed to, see _Why there is
-no `base_url`_ below. It has two routes, and you need one of them.
+no `base_url`_ below. It goes through Home Assistant, and **it picks how by itself**:
 
-**Route 1, `connection: ingress` (the default).** Scrypted runs as a **Home Assistant
-add-on**, on a **Supervised or Home Assistant OS** install. Nothing to configure: the card
-asks the Supervisor for an ingress session over the websocket Home Assistant already
-authenticated, so no token or password ends up in your dashboard.
+> The card uses the [`koush/ha_scrypted`](https://github.com/koush/ha_scrypted) integration's
+> proxy when that integration is installed. Otherwise the Scrypted **add-on**. If you set
+> Scrypted `username`/`password`, always the add-on — that is the only route where they mean
+> anything. If the proxy is installed but cannot be resolved, the add-on is tried anyway
+> before the card gives up.
 
-**Route 2, `connection: integration`.** Scrypted runs wherever you like — its own container,
-a NAS, another host — and you install
-[`koush/ha_scrypted`](https://github.com/koush/ha_scrypted) through HACS, pointed at that
-Scrypted. The card then goes through that integration's proxy, which runs on the Home
-Assistant side. This also works on **HA Container and HA Core**, which have no Supervisor.
-The cost: everything the card sees goes through the account that integration is configured
-with, so `username` / `password` are refused in this mode — see _Card config_.
+So one of these has to be true, and there is nothing to configure for either:
+
+- **Scrypted as a Home Assistant add-on**, on a **Supervised or Home Assistant OS** install.
+  The card asks the Supervisor for an ingress session over the websocket Home Assistant
+  already authenticated, so no token or password ends up in your dashboard.
+- **or the `koush/ha_scrypted` integration** installed through HACS and pointed at your
+  Scrypted — which can be anywhere: its own container, a NAS, another host. This also works
+  on **HA Container and HA Core**, which have no Supervisor. The cost: everything the card
+  sees goes through the account that integration is configured with, so `username` /
+  `password` are refused on this route — see _Card config_.
+
+The card shows which route it took next to the version number, bottom right, while it is
+paused: `v0.5.0 · integration` or `· ingress`.
 
 **Administrator rights are *not* required** on either route. They used to be, and this is the
 point people carry over from older versions: the card no longer asks Home Assistant for the
@@ -155,27 +162,31 @@ name: Eingang          # optional, shown in the control bar
 aspect_ratio: 16 / 9   # optional, any CSS aspect-ratio value
 autoplay: false        # optional, default false - see below
 # destination: low-resolution  # optional, see below
-# connection: integration    # optional, default ingress - see below
-# addon: 09e60fb6_scrypted   # ingress only, and only if your add-on's slug differs
-# integration_title: Scrypted  # integration only, and only with several entries
-# username / password        # ingress only, see below
+# source: Scrypted           # optional - only when the default does not fit, see below
+# username / password        # add-on route only, see below
 ```
 
-**`connection`** selects the route from _Before you install_. `ingress` is the default and
-needs nothing else. `integration` requires the
-[`koush/ha_scrypted`](https://github.com/koush/ha_scrypted) integration installed and
-configured with your Scrypted host; the card then finds its proxy by itself, and there is no
-URL to enter.
+**`source`** names the add-on or the integration entry, and **you normally leave it empty.**
+There is no option for the route: the card decides that by the rule in _Before you install_,
+and `source` is then read by whichever route it chose.
 
-`username` / `password` are **refused** with `connection: integration`, and that is
-deliberate rather than an omission: the proxy replaces the authorization header on every
-request with the integration's own, so credentials on the card would look like they scope it
-and scope nothing. If you need per-card scoping, use the ingress route.
+Empty means "the obvious one": the only `koush/ha_scrypted` entry, or the add-on's usual slug
+`09e60fb6_scrypted`. Set it when that is not enough:
 
-**`integration_title`** picks between several Scrypted integration entries. It matches the
-**Name** of the entry — not the host, which is what Home Assistant shows as the entry's title
-in its integrations list. The name defaults to `Scrypted` for every entry, so if you have two,
-rename one first; two entries with the same name cannot be told apart.
+- on the integration route it is that entry's **Name** — *not* the host, which is what Home
+  Assistant shows as the entry's title in its integrations list. The Name defaults to
+  `Scrypted` for every entry, so if you have two, rename one first; two entries with the same
+  name cannot be told apart by this card.
+- on the add-on route it is the add-on slug, for the rare install whose slug differs.
+
+`username` / `password` are **refused** on the integration route, and that is deliberate
+rather than an omission: the proxy replaces the authorization header on every request with the
+integration's own, so credentials on the card would look like they scope it and scope nothing.
+Setting them is therefore also what pins a card to the add-on route.
+
+**Upgrading from 0.4.x or earlier:** `addon` still works as a deprecated alias for `source`.
+`connection` and `integration_title` are gone and are ignored; open the card in the visual
+editor once and they are cleaned out of the YAML.
 
 **`autoplay`** decides only whether the card starts streaming when it first
 loads. Default `false`: the card connects to Scrypted, shows a still image and
@@ -289,11 +300,11 @@ nothing it can do would close it. If someone should not reach Scrypted, that bou
 belongs in Scrypted's own user management, or in not giving them a Home Assistant
 account — a dashboard card cannot enforce it.
 
-**The integration route depends on another project.** `connection: integration` relies on
-`koush/ha_scrypted` keeping its proxy at `/api/scrypted/<token>/` and publishing it on its
-sidebar panel. That is a third-party repository this card does not control, so a change there
-breaks this route — the ingress route is unaffected, and the card's error messages name the
-integration so it is clear whose contract broke.
+**The integration route depends on another project.** It relies on `koush/ha_scrypted` keeping
+its proxy at `/api/scrypted/<token>/` and publishing it on its sidebar panel. That is a
+third-party repository this card does not control, so a change there breaks this route — the
+add-on route is unaffected, the card falls back to it when the proxy cannot be resolved, and
+the error messages name the integration so it is clear whose contract broke.
 
 Two properties of that route to know before choosing it: everything goes through the account
 the integration is configured with, so per-card scoping via `username` / `password` is not
