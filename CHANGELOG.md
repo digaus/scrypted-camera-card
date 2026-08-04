@@ -7,6 +7,37 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.4.0-beta.1] - 2026-08-04
+
+**A test build, published as a prerelease.** It is not offered by HACS unless beta versions
+are enabled for this repository, and it should not be used on a dashboard you rely on: the
+new mode below has never streamed a picture, and the change to reach it touched code the
+existing connection path runs through.
+
+### Added
+
+- **`connection: integration`** — reach a Scrypted that is **not** the Home Assistant
+  add-on. The card routes through the HTTP proxy of the
+  [`koush/ha_scrypted`](https://github.com/koush/ha_scrypted) integration, which must be
+  installed and configured with your Scrypted host. The default, `connection: ingress`, is
+  unchanged and still expects the add-on.
+
+  Connecting straight to a Scrypted URL is not possible from a dashboard and never will be:
+  the browser blocks it before the request leaves, because Scrypted answers the CORS
+  preflight without an `Access-Control-Allow-Origin` header and the client library forces the
+  credentialed request mode where no wildcard is accepted either. The integration's proxy
+  runs on the Home Assistant side, so there is no cross-origin request at all — and it
+  authenticates for us, which is why `username`/`password` are **refused** in this mode: the
+  proxy overwrites that header, so credentials there would look like they scope the card
+  while scoping nothing.
+
+  `integration_title` picks one when several Scrypted integration entries exist. It matches
+  the **Name** of the entry, whose default is `Scrypted` for all of them — two entries left
+  at the default cannot be told apart, and one of them has to be renamed.
+
+  No editor fields yet; set it in YAML. The visual editor and the documentation follow once
+  this build has been tested.
+
 ## [0.3.1] - 2026-08-03
 
 ### Changed

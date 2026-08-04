@@ -76,6 +76,25 @@ const RTC_SIGNALING_CHANNEL = 'x-scrypted/x-scrypted-rtc-signaling-channel';
 // validation in setConfig() and offer a value the card then refuses.
 export const DESTINATIONS = ['local', 'remote', 'low-resolution'];
 
+// Accepted values for the `connection` option - where _start() takes its base URL
+// from. `ingress` asks the Supervisor for the add-on's ingress path and is what the
+// card has always done. `integration` resolves the HTTP proxy that the
+// koush/ha_scrypted integration publishes, which is the only way to a Scrypted that is
+// not the add-on: a browser cannot reach one directly, because Scrypted answers the
+// preflight without an Access-Control-Allow-Origin header and @scrypted/client
+// hardcodes withCredentials - which rules out a wildcard too. Measured, see PLAN_F08.
+// The first entry is the default, and everything below the base URL is shared: the
+// proxy authenticates server-side and hands back the same login shape ingress does.
+// Exported for the editor's dropdown for the same reason DESTINATIONS is: a second
+// literal there would drift from the validation in setConfig() and offer a value the
+// card then refuses.
+export const CONNECTIONS = ['ingress', 'integration'];
+
+// What the integration names its panel: `frontend_url_path=f"{DOMAIN}_{token}"` with
+// DOMAIN = "scrypted", so the prefix is what identifies a candidate and the remainder
+// is the proxy's path token - which is *not* the bearer token, the two differ.
+const PANEL_PREFIX = 'scrypted_';
+
 // Which add-on the card talks to when `addon` is not configured. Not a guess:
 // measured across several Home Assistant installations, the slug is always this,
 // because the prefix derives from the add-on repository rather than the installation.
@@ -218,6 +237,16 @@ const ICON_MUTED = '<svg viewBox="0 0 24 24"><path d="M4.27 3L3 4.27 7.73 9H3v6h
  */
 const isRefusal = (err) => !!err && err.code === 'unauthorized';
 
+/**
+ * A failure of _proxyBaseUrl(), marked as one. _start()'s catch has to tell these from
+ * a camera that dropped: they are counted separately and only they are bounded, because
+ * a missing integration and a lost stream have nothing to do with each other. The mark
+ * rides on the error rather than on a card field so that no path has to remember to
+ * clear it, and none of these failures is permanent - see _latchResolver().
+ */
+const resolverError = (message) => Object.assign(new Error(message), { resolver: true });
+const isResolverFailure = (err) => !!err && err.resolver === true;
+
 /** A dead RPC peer swallows calls without ever rejecting, which would hang recovery. */
 export const withTimeout = (promise, ms) => Promise.race([
   promise,
@@ -250,6 +279,16 @@ class ScryptedCameraCard extends HTMLElement {
     // none of them costs nothing - see _connectionKey().
     this._connectionSig = null;
     this._retries = 0;
+    // Consecutive failures of _proxyBaseUrl(), counted apart from _retries because the
+    // two are different faults with different bounds. "Consecutive" is only true because
+    // of the four resets: a successful resolve, the play button, _reconfigure() and
+    // _teardown(). Without them this would be cumulative over the life of the page, and
+    // three transient integration reloads hours apart would latch a healthy card.
+    this._resolverFailures = 0;
+    // The candidate panel set the last re-arm check saw, and the object it was read
+    // from - see _rearmResolver().
+    this._panelSig = null;
+    this._panelsSeen = null;
     this._stopped = false;      // user pressed stop - do not self-heal
     // Whether a stream is wanted. Seeded from `autoplay` in setConfig() and owned
     // by the card afterwards. `autoplay` must not be read again: _start() is
@@ -313,6 +352,29 @@ class ScryptedCameraCard extends HTMLElement {
     this._destinationError = this._destination && !DESTINATIONS.includes(this._destination)
       ? `unknown destination "${this._destination}" - use one of ${DESTINATIONS.join(', ')}`
       : null;
+    // Kept in its own field rather than folded into _destinationError, which has two
+    // writers already: a connection error must not be able to overwrite a destination
+    // one, or the user fixes the sentence they can see and the card still refuses.
+    // Both are genuine card configuration, so both are permanent - unlike every failure
+    // _proxyBaseUrl() produces, which describes the environment instead.
+    const connection = this._config.connection || CONNECTIONS[0];
+    this._connectionError = null;
+    if (!CONNECTIONS.includes(connection)) {
+      this._connectionError =
+        `unknown connection "${connection}" - use one of ${CONNECTIONS.join(', ')}`;
+    } else if (connection === 'integration' && (this._config.username || this._config.password)) {
+      // Refused, not ignored, and the message names the mechanism rather than a doubt:
+      // with credentials set the client puts the login authorization into the primary
+      // socket's headers, and the integration's proxy overwrites that header on every
+      // request and websocket it forwards. The RPC connection would therefore run as
+      // the *integration's* Scrypted account while this config claims otherwise - a
+      // scoping guarantee that is not one. Scoping by credentials exists on the ingress
+      // path only.
+      this._connectionError = 'username/password cannot scope a card in'
+        + ' "connection: integration" - the integration\'s proxy replaces the login'
+        + ' authorization with its own account on every request, so remove them or use'
+        + ' "connection: ingress"';
+    }
     // Created once, updated ever after. Replacing the shadow DOM per keystroke is what
     // used to kill a live picture: the replacement <video> carries no srcObject, and
     // onTrack only assigns one for a MediaStream it created itself, so nothing repaired
@@ -336,6 +398,9 @@ class ScryptedCameraCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    // Assigned first: the re-arm reads hass.panels, and this setter is the only place
+    // that learns the panel set changed at all.
+    this._rearmResolver();
     if (!this._started && this.isConnected) this._start();
   }
 
@@ -611,10 +676,17 @@ class ScryptedCameraCard extends HTMLElement {
    * The config values the live connection was built from. `name` and `aspect_ratio`
    * are not among them: _applyConfig() writes those into the existing DOM and no
    * reconnect is involved.
+   *
+   * `connection` and `integration_title` are: they decide which base URL the client was
+   * built against, and leaving them out would make switching mode in the visual editor
+   * do nothing until the page is reloaded - indistinguishable from the feature not
+   * working. `integration_title` is also the fix for a latched resolver, which is why
+   * _reconfigure() clears its counter.
    */
   _connectionKey() {
     const c = this._config;
-    return JSON.stringify([c.device, c.addon, c.destination, c.username, c.password]);
+    return JSON.stringify([c.device, c.addon, c.destination, c.username, c.password,
+      c.connection, c.integration_title]);
   }
 
   /**
@@ -647,15 +719,24 @@ class ScryptedCameraCard extends HTMLElement {
     this._dropClient();
     if (this._stopped) return;
     this._retries = 0;
+    // The resolver's bound too, and this is the site neither of the other two clearing
+    // mechanisms covers: `integration_title` is part of _connectionKey(), so editing it
+    // is a first-class fix for a latched card, and this path reaches _start() without
+    // going through `set hass` or the play button.
+    this._resolverFailures = 0;
     await this._start();
   }
 
   async _start() {
     if (this._connecting) return;
-    if (this._destinationError) {
+    // Both are card configuration and neither can heal by retrying, so they are shown
+    // and nothing is scheduled. Destination first, arbitrarily but stably: a config can
+    // carry both mistakes and only one sentence fits on screen.
+    const configError = this._destinationError || this._connectionError;
+    if (configError) {
       this._started = true;
       this._busy(false);
-      this._status(this._destinationError);
+      this._status(configError);
       return;
     }
     this._connecting = true;
@@ -678,11 +759,28 @@ class ScryptedCameraCard extends HTMLElement {
       // resolves undefined rather than rejecting, so both results are checked and
       // the checks throw - into the catch below, and from there into the normal
       // retry cycle. No new error path is needed.
-      const baseUrl = await withTimeout(this._ingressBaseUrl(gen), INGRESS_TIMEOUT);
-      if (!baseUrl) {
-        throw new Error(
-          `Home Assistant did not answer within ${INGRESS_TIMEOUT / 1000}s while opening the ingress session`,
-        );
+      let baseUrl;
+      if (this._config.connection === 'integration') {
+        // Neither bounded nor guarded, and both are deliberate: this is a read of
+        // hass.panels with no network call behind it, so there is nothing for
+        // withTimeout to bound, and it either throws or returns a string, so there is
+        // no falsy result to catch. Every other await in this method is bounded, which
+        // is why the asymmetry is written down rather than left to look like an
+        // oversight.
+        baseUrl = this._proxyBaseUrl();
+        // "Consecutive" lives here: a resolve that worked ends the run, and only the
+        // failures that follow one another are allowed to reach the bound.
+        this._resolverFailures = 0;
+      } else {
+        baseUrl = await withTimeout(this._ingressBaseUrl(gen), INGRESS_TIMEOUT);
+        // Inside the ingress branch, not shared: the sentence names the ingress session
+        // and INGRESS_TIMEOUT, and a shared guard would let it describe a proxy failure
+        // that has neither.
+        if (!baseUrl) {
+          throw new Error(
+            `Home Assistant did not answer within ${INGRESS_TIMEOUT / 1000}s while opening the ingress session`,
+          );
+        }
       }
       // Kept in a variable because withTimeout abandons rather than cancels: this
       // promise may still be connecting and hand back a live client afterwards.
@@ -794,6 +892,20 @@ class ScryptedCameraCard extends HTMLElement {
           + ' - this needs an administrator account');
         return;
       }
+      // The only place the latch is read, and it gates the *scheduling* of the next
+      // attempt - never the entry to _start(). Gating entry is how the card ends up
+      // stranded: _start() returns before doing anything, so nothing recomputes the
+      // condition and no press of play gets through.
+      if (isResolverFailure(err)) {
+        this._resolverFailures += 1;
+        // ESCALATE_AFTER_RETRIES rather than a fourth retry threshold of its own: the
+        // number means the same thing here - this many failures in a row is when the
+        // card stops being optimistic.
+        if (this._resolverLatched()) {
+          this._latchResolver(String(err.message || err));
+          return;
+        }
+      }
       this._scheduleRetry(String(err.message || err));
     } finally {
       // Cleared here even though a timed-out attempt can still be in flight, so a
@@ -881,6 +993,139 @@ class ScryptedCameraCard extends HTMLElement {
     });
     if (!info.ingress_entry) throw new Error(`add-on ${slug} has no ingress entry`);
     return new URL(`${info.ingress_entry}/`, location.origin).toString();
+  }
+
+  /**
+   * Every panel the koush/ha_scrypted integration has registered. `hass.panels` is a
+   * keyed object - { [url_path]: PanelInfo } - and not an array, so .filter() on it
+   * throws; that throw would land in _start()'s catch and read as a connection failure
+   * rather than as a mistake in here. Object.values() also works on an array, so this
+   * holds either way, and the panel carries its own `url_path` so nothing depends on the
+   * key. Neither shape can be verified from this repository - no Home Assistant frontend
+   * source or types are installed.
+   */
+  _scryptedPanels() {
+    return Object.values(this._hass?.panels || {})
+      .filter((p) => p && typeof p.url_path === 'string' && p.url_path.startsWith(PANEL_PREFIX));
+  }
+
+  /**
+   * The base URL of the HTTP proxy the koush/ha_scrypted integration serves, for a
+   * Scrypted that is not the add-on. Everything below it is the ingress path's: the
+   * proxy authenticates server-side and answers /login with the same fields
+   * @scrypted/client validates, so connectScryptedClient() cannot tell the two apart.
+   *
+   * Deliberately no Supervisor call, no cookie and no keepalive. The symmetry with
+   * _ingressBaseUrl() invites copying its session machinery across, and there is nothing
+   * to copy it for: that machinery keeps a Supervisor-issued ingress session alive,
+   * while the proxy view authenticates every request with the integration's own bearer
+   * token and requires no session of ours. Its absence is not an oversight.
+   *
+   * Every failure throws a resolverError, and none of them is permanent: panel presence
+   * is environment state with real transient windows, because the integration removes
+   * its panel while an entry reloads and adds it back with a freshly retrieved token.
+   * The bound lives in _start()'s catch and the way back in _rearmResolver().
+   */
+  _proxyBaseUrl() {
+    const panels = this._scryptedPanels();
+    const wanted = this._config.integration_title;
+    // A configured title never falls back to "the only panel". While one of two entries
+    // reloads, the resolver sees exactly one panel and cannot tell that from a
+    // single-entry installation - and silently connecting to the other Scrypted is the
+    // worst outcome available here: with a same-named camera it is a picture from the
+    // wrong house. Refusing costs a few seconds, guessing costs trust.
+    const matched = wanted ? panels.filter((p) => p.title === wanted) : panels;
+    if (!matched.length) {
+      // Both texts name the integration, so a stranger can tell whose contract broke -
+      // this is a third-party repository and the ingress path does not depend on it.
+      throw resolverError(wanted
+        ? `no Scrypted panel named "${wanted}" - "integration_title" is the *Name* of the`
+          + ' koush/ha_scrypted integration entry, not the host its integrations entry is'
+          + ' titled with'
+        : 'no Scrypted panel found - "connection: integration" needs the koush/ha_scrypted'
+          + ' integration installed and configured');
+    }
+    if (matched.length > 1) {
+      // Two entries left at the default name cannot be told apart by this card at all:
+      // CONF_NAME defaults to "Scrypted" for every entry, so panel.title is the same
+      // string for both and no value of integration_title selects one. The fix is on the
+      // integration's side, and the message has to say that rather than implying the card
+      // could resolve it.
+      throw resolverError(wanted
+        ? `${matched.length} Scrypted panels are named "${wanted}" - rename one of the`
+          + ' koush/ha_scrypted entries, the card cannot tell two identically named ones'
+          + ' apart'
+        : `${matched.length} Scrypted panels found (${matched.map((p) => p.title).join(', ')})`
+          + ' - set "integration_title" to the Name of the koush/ha_scrypted entry this'
+          + ' card should use, and rename one of the entries first if they read the same');
+    }
+
+    const panel = matched[0];
+    // Prefer the path the integration publishes over deriving one: __init__.py sets
+    // config._panel_custom.module_url to f"/api/{DOMAIN}/{token}/entrypoint.js", so
+    // taking it stops the card depending on the token being the remainder of url_path.
+    // The derivation is the fallback and is verified against
+    // frontend_url_path=f"{DOMAIN}_{token}", so neither source is a guess.
+    const moduleUrl = panel.config?._panel_custom?.module_url;
+    const path = moduleUrl
+      ? moduleUrl.replace(/entrypoint\.js$/, '')
+      : `/api/scrypted/${panel.url_path.slice(PANEL_PREFIX.length)}/`;
+    // The trailing slash is load-bearing, exactly as at the end of _ingressBaseUrl():
+    // combineBaseUrl() in @scrypted/client drops the last segment of a base that has
+    // none, which would send every request one directory up. Measured in PLAN_F06 - do
+    // not remove this as untidy.
+    return new URL(path.endsWith('/') ? path : `${path}/`, location.origin).toString();
+  }
+
+  /**
+   * The latch is derived, never stored: a boolean beside the counter is a second piece of
+   * state that can disagree with it, and every one of the four reset sites would then
+   * have to clear both. Clearing the counter *is* clearing the latch.
+   */
+  _resolverLatched() {
+    return this._resolverFailures >= ESCALATE_AFTER_RETRIES;
+  }
+
+  /**
+   * Panel presence is environment state, so no resolver failure is permanent: when the
+   * candidate set changes - an entry finished reloading, the second one was removed, the
+   * user renamed the one this card asks for - a latched card asks again. Hung off
+   * `set hass` because that setter is the only thing that sees `hass.panels` change.
+   *
+   * Through _retry() and not _start(), which is the whole point of doing this here:
+   * _retry() carries the three guards every other self-healing path in this file carries
+   * and _start() does not. It checks _stopped rather than _started - which only means
+   * "has ever started", so a card the user deliberately stopped would reconnect on an
+   * unrelated panel change. It defers to _pendingRetry while the card is off screen,
+   * where _start() would reach `if (this._wantStream) await this._play()` and open a
+   * stream nobody is looking at. And it cannot silently vanish on _connecting, which
+   * would lose the re-arm for good, because the signature below has already been recorded
+   * as seen. It funnels into _start() anyway, since !_client is always true after a
+   * resolver failure.
+   */
+  _rearmResolver() {
+    // Scoped to the mode. This setter fires on every Home Assistant state update, on
+    // every ingress card too, and the default path has to stay byte for byte what it was.
+    if (this._config?.connection !== 'integration') return;
+    const panels = this._hass.panels;
+    // Identity first, because it is free. If Home Assistant turns out to hand out a
+    // fresh object per update this degenerates to computing the signature every time,
+    // over a handful of panels - not a cost worth defending.
+    if (panels === this._panelsSeen) return;
+    this._panelsSeen = panels;
+    // url_path *and* title, not the paths alone. The ambiguity failures are *about*
+    // panel.title: a user told to rename the integration entry does so, the entry
+    // reloads, and if the path token turns out to be stable - rotation is an inference,
+    // not a measurement - a url_path-only signature would not change. The card would
+    // stay latched after the user performed exactly the fix it asked for.
+    const sig = JSON.stringify(this._scryptedPanels().map((p) => [p.url_path, p.title]).sort());
+    if (sig === this._panelSig) return;
+    this._panelSig = sig;
+    // Recorded either way above, but only a latched card has anything to do about it -
+    // asking a working one to _retry() would raise the spinner over a live picture.
+    if (!this._resolverLatched()) return;
+    this._resolverFailures = 0;
+    this._retry();
   }
 
   _findDevice() {
@@ -1332,6 +1577,39 @@ class ScryptedCameraCard extends HTMLElement {
     this._retryTimer = setTimeout(() => this._retry(), delay);
   }
 
+  /**
+   * The resolver has failed ESCALATE_AFTER_RETRIES times in a row: leave the message on
+   * screen and schedule nothing, because an integration that is not there will not
+   * appear because we asked a fourth time, and an unbounded retry rebuilds exactly the
+   * storm the refusal branch in _start() records - one attempt every 30 s for as long as
+   * the page stays open, one loop per card.
+   *
+   * Three writes, and none of them is optional: _scheduleRetry() is what paints this
+   * state today, so declining to arm its timer declines all of it.
+   */
+  _latchResolver(reason) {
+    this._outageReason = String(reason);
+    // Without this the card can end up silent. _syncStatus() returns without writing
+    // while `_outageFromLive && !_escalated`, and _escalated is otherwise set only by
+    // _scheduleRetry() once it has counted three retries - which is one more than this
+    // path ever schedules. So on an outage that interrupted a working stream there would
+    // be no retry pending and no text: a dead card behind a stale poster. Not _status()
+    // directly, unlike the two other non-retrying paths: those are only reachable on a
+    // first connect, while this state can be reached with an outage live, and a later
+    // _syncStatus() from _recover() or _onNetworkBack() would overwrite a bare _status().
+    this._escalated = true;
+    this._syncStatus();
+    // Nothing is coming, so the ring and the play button's pulse must stop claiming the
+    // card is still working - they would otherwise say it forever.
+    this._busy(false);
+    // _scheduleRetry() left a stop icon behind, and _onToggle()'s cancel branch is now
+    // false on all three of _session, _retryTimer and _pendingRetry - so the button would
+    // *start* a connect while *showing* a stop. The two other non-retrying paths never
+    // hit this because both are reachable only on a first connect.
+    this._showStop = false;
+    this._syncToggle();
+  }
+
   async _retry() {
     this._retryTimer = null;
     if (this._stopped || !this.isConnected) return;
@@ -1464,6 +1742,11 @@ class ScryptedCameraCard extends HTMLElement {
     this._stopped = false;
     this._wantStream = true;
     this._retries = 0;
+    // The resolver's bound as well, for the reason the comment above the refusal branch
+    // in _start() states: that is a person asking, not a loop. Without this the first
+    // failure after the press re-latches immediately and the press bought one attempt
+    // instead of the bounded three.
+    this._resolverFailures = 0;
     // If the initial connect failed there is no device to stream from. Retry the
     // whole connect from here rather than letting _play() fail on undefined -
     // that produced a misleading "cannot read startRTCSignalingSession" and hid
@@ -1545,6 +1828,12 @@ class ScryptedCameraCard extends HTMLElement {
     this._dropPoster();
     this._started = false;
     this._retries = 0;
+    // So a card Home Assistant removes and re-adds does not inherit a latch. The panel
+    // signature goes with it: a re-added card must record what it sees now rather than
+    // measure a change against a set it never acted on.
+    this._resolverFailures = 0;
+    this._panelSig = null;
+    this._panelsSeen = null;
   }
 
   _clearTimer(field) {
