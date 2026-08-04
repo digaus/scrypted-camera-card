@@ -184,9 +184,12 @@ rather than an omission: the proxy replaces the authorization header on every re
 integration's own, so credentials on the card would look like they scope it and scope nothing.
 Setting them is therefore also what pins a card to the add-on route.
 
-**Upgrading from 0.4.x or earlier:** `addon` still works as a deprecated alias for `source`.
-`connection` and `integration_title` are gone and are ignored; open the card in the visual
-editor once and they are cleaned out of the YAML.
+**Upgrading from 0.4.x or earlier — this one breaks configs.** `addon`, `connection` and
+`integration_title` are gone with no alias. If your `addon` was the default slug or unset,
+there is nothing to do. If you had set it to something else, **rename the key to `source`** —
+otherwise the card looks for the default add-on and reports that it cannot read it. `connection`
+and `integration_title` are simply ignored. Opening the card once in the visual editor removes
+all three from the YAML.
 
 **`autoplay`** decides only whether the card starts streaming when it first
 loads. Default `false`: the card connects to Scrypted, shows a still image and

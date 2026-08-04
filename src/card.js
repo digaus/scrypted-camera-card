@@ -342,16 +342,14 @@ class ScryptedCameraCard extends HTMLElement {
     const first = !this._config;
     this._config = { autoplay: false, aspect_ratio: '16 / 9', ...config };
     // The one name the card is given, read by whichever route _pickRoute() takes: an
-    // integration entry's Name, or an add-on slug. Resolved from the *incoming* config
-    // and not from this._config, because `addon` is only a deprecated alias for it: it
-    // applies when `source` is absent as a key, not when it is falsy. A hand-written
-    // `source: ''` is a deliberate "use the default for whichever route you take" and a
-    // leftover `addon` must not override it - which is also the case an eager default
-    // here used to cover, and no longer may: a default that belongs to one route cannot
-    // be written into a field the other one reads. Empty means "the route decides", and
-    // each route has its own answer - _ingressBaseUrl() falls back to DEFAULT_ADDON,
-    // _proxyBaseUrl() accepts a single panel.
-    this._source = 'source' in config ? (config.source || '') : (config.addon || '');
+    // integration entry's Name, or an add-on slug. `addon` from 0.4.0 and earlier is *not*
+    // accepted as an alias - a deliberate break, announced in the CHANGELOG, so there is
+    // exactly one key that speaks for this and no question about which of two wins.
+    // No eager default either: a default that belongs to one route must not be written
+    // into the field the other route reads. Empty means "the route decides", and each has
+    // its own answer - _ingressBaseUrl() falls back to DEFAULT_ADDON, _proxyBaseUrl()
+    // accepts a single panel.
+    this._source = this._config.source || '';
     // The first call only, and deliberately not "apply the config": from here on
     // _wantStream is the card's, for the reason spelled out in the constructor. HA's
     // visual editor calls setConfig() on every keystroke, so re-seeding it would let a
@@ -693,10 +691,8 @@ class ScryptedCameraCard extends HTMLElement {
    *
    * `source` is, because whichever route is taken resolves its base URL from it - and it
    * is also the fix for a latched resolver, which is why _reconfigure() clears that
-   * counter. The *resolved* `this._source`, not `c.source`: keying on the raw key would
-   * make an edit of a legacy `addon` value produce no reconnect, and carrying both keys
-   * would tear a live stream down when the editor drops the alias from a config whose
-   * value did not change.
+   * counter. The *resolved* `this._source` rather than `c.source`, so that an absent key
+   * and an empty one cannot key differently for a value the card treats identically.
    *
    * The route itself is not in here and cannot be: installing the integration changes
    * the route without changing the config, so no key would notice. It does not need to -

@@ -9,6 +9,24 @@ implemented. Version and date are filled in at release time.
 
 ## [0.5.0] - 2026-08-04
 
+### ⚠ Breaking
+
+**Three config keys are gone: `addon`, `connection` and `integration_title`.** They are
+replaced by one, `source`, and **no alias is kept** — a card that relies on any of them will
+not work as configured after this update.
+
+What to do, and for most installations it is nothing:
+
+- **`addon` set to the default `09e60fb6_scrypted`, or not set at all** — delete it, or leave
+  it, either is fine. The card resolves the add-on route to that slug on its own.
+- **`addon` set to something else** — rename the key to `source`. This is the case that
+  breaks: the card no longer reads `addon`, so it would look for the default add-on instead of
+  yours and report that it cannot read it.
+- **`connection` or `integration_title` (from 0.4.0, released the same day)** — delete them.
+  They are ignored.
+
+Opening the card once in the visual editor removes all three keys from the YAML for you.
+
 ### Changed
 
 - **The card now picks how it reaches Scrypted by itself, and the three options from 0.4.0
@@ -28,15 +46,11 @@ implemented. Version and date are filled in at release time.
   sidebar panel is a local read, not a network call that has to fail first. A leftover
   `connection:` in a config is ignored.
 
-- **`addon` and `integration_title` become one key, `source`.** It names the add-on slug or the
-  integration entry's Name, depending on the route the card chose — which is unambiguous
-  because the route is decided first. **You normally leave it empty**; it is no longer
-  prefilled with the add-on's default slug, because that default applies to only one of the
-  two routes.
-
-  **`addon` still works** as a deprecated alias, so existing configurations keep running. The
-  visual editor rewrites it to `source` the next time the card is edited. `integration_title`
-  is dropped and ignored.
+- **`addon` and `integration_title` become one key, `source`** (see _Breaking_ above). It names
+  the add-on slug or the integration entry's Name, depending on the route the card chose —
+  which is unambiguous because the route is decided first. **You normally leave it empty**; it
+  is no longer prefilled with the add-on's default slug, because that default applies to only
+  one of the two routes.
 
 - Setting `username`/`password` no longer produces an error on the integration route; it
   selects the add-on route instead, which is what those values were asking for.

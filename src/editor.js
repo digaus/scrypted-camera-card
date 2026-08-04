@@ -207,11 +207,10 @@ class ScryptedCameraCardEditor extends HTMLElement {
       aspect_ratio: c.aspect_ratio || '',
       autoplay: !!c.autoplay,
       destination: c.destination || NO_DESTINATION,
-      // The legacy `addon` as fallback, so opening the editor on a pre-0.5.0 config shows
-      // the value the card is actually using rather than an empty box. Truthiness is right
-      // here even though the card keys the alias on presence: an empty legacy `addon` and
-      // an absent one both render as empty, which is what they mean.
-      source: c.source || c.addon || '',
+      // Not filled in from a pre-0.5.0 `addon`, because the card does not read that key
+      // either: showing its value here would promise a card that works. An empty field on
+      // an old config is the honest rendering, and _commit() then drops the dead key.
+      source: c.source || '',
       username: c.username || '',
       password: c.password || '',
     };
@@ -248,15 +247,12 @@ class ScryptedCameraCardEditor extends HTMLElement {
     // and the YAML should not carry a key the user did not set.
     put(config, 'destination', value.destination === NO_DESTINATION ? '' : value.destination);
     put(config, 'source', value.source);
-    // Unconditionally, not only when a `source` is written. The conditional version is a
-    // silent divergence: on a legacy `{addon: 'x'}` the user empties the field, put()
-    // deletes an absent `source`, `addon: 'x'` survives, _formData() reads it back through
-    // the alias - and because the echo added below matches that shape, _syncForm() declines
-    // to re-render. The field then looks empty while the card still uses 'x'. Once this
-    // editor has touched a config, `source` is the only key that speaks for it.
+    // The three keys 0.5.0 dropped. None of them is read any more, so they are inert - but a
+    // key sitting in the YAML reads as if it does something, and `addon` in particular used
+    // to. Removing them unconditionally means one visit to this editor is enough to make a
+    // config say what it actually does. It is also why the field above is not prefilled from
+    // `addon`: the value is dead, and showing it would promise otherwise.
     delete config.addon;
-    // The two keys 0.4.0 shipped for a few hours. The card ignores them; removing them here
-    // keeps them from sitting in the YAML looking like they still do something.
     delete config.connection;
     delete config.integration_title;
     put(config, 'username', value.username);
