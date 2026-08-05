@@ -7,6 +7,24 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.5.1] - 2026-08-05
+
+### Changed
+
+- **The visual editor offers `source` as a list of what is installed** instead of asking for a
+  name in free text: each `koush/ha_scrypted` entry by its Name, plus the Scrypted add-on,
+  plus "Automatic" for the usual case. This removes the field's real trap — the integration
+  entry is identified by its **Name**, while Home Assistant lists that entry under its
+  **host**, so the value that looked obvious was the wrong one.
+
+  **No administrator rights are needed for it.** The add-on's slug is not read from
+  `/addons`, which is admin-gated; it comes out of the update entity the Supervisor creates
+  per add-on. Measured on a non-admin account.
+
+  Where nothing can be discovered — no integration entry, no Scrypted add-on — the field stays
+  free text and behaves exactly as in 0.5.0. Same for a `source` set in YAML that the list does
+  not contain: the field stays text so that opening the editor cannot overwrite it.
+
 ## [0.5.0] - 2026-08-04
 
 ### ⚠ Breaking

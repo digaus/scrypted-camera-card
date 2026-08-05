@@ -22,6 +22,66 @@ const HA_FORM_TIMEOUT = 5000;
 // in the form. It is never written to the config - see _commit().
 const NO_DESTINATION = 'default';
 
+// The same trick for `source`, and mapped back only while that field is a dropdown: in text
+// mode this string is a value a user could conceivably type, and turning it into "unset"
+// there would delete an add-on slug that happened to read like it. See _commit().
+const NO_SOURCE = 'auto';
+
+// The slug is not exposed as a field anywhere a non-admin may look, but the Supervisor's
+// per-add-on update entity carries it in its icon URL:
+//   update.scrypted_update | Scrypted | /api/hassio/addons/09e60fb6_scrypted/icon
+// Measured 2026-08-05 on a non-admin account, which is the whole point - `/addons`, the
+// endpoint that would answer this properly, is the one admin-gated call this card ever made
+// and is deliberately still not used. A heuristic on an internal detail, so the feature is
+// built to lose nothing when it stops matching: no candidates means the field is free text,
+// exactly as it was before.
+const ADDON_ICON = /^\/api\/hassio\/addons\/([^/]+)\/icon/;
+
+// Duplicated from the card's own _scryptedPanels() rather than imported: neither it nor its
+// prefix are exported, and widening the card's export surface for the editor's convenience is
+// worse than four lines that say the same thing in one place per file.
+const PANEL_PREFIX = 'scrypted_';
+
+/**
+ * Every Scrypted source this Home Assistant can be seen to have, as ha-form options. Both
+ * lists come out of `hass` with no network call, so this works for the non-admin accounts
+ * this card is meant to serve.
+ *
+ * Integration entries first: with the integration installed that is the route the card takes
+ * (see _pickRoute() in card.js), so the likely answer belongs at the top of the list.
+ *
+ * The add-on side is filtered to Scrypted by name, because unfiltered it would offer esphome,
+ * ssh and vscode as the source of a camera - a wrong choice invited is worse than a missing
+ * one offered. The cost is that a Scrypted add-on named nothing like Scrypted cannot be
+ * *selected*; it can still be set in YAML, and docs/limitations.md says so.
+ */
+const scryptedSources = (hass) => {
+  const out = [];
+  const seen = new Set();
+  const add = (value, label) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    out.push({ value, label });
+  };
+  // Tolerant of everything missing: this runs while the dialog is still opening.
+  for (const panel of Object.values(hass?.panels || {})) {
+    if (typeof panel?.url_path === 'string' && panel.url_path.startsWith(PANEL_PREFIX)) {
+      // The *title*, because that is what the card matches on - and the reason this list
+      // exists at all: Home Assistant lists the same entry under its host, so the value a
+      // user would have typed is the wrong one.
+      add(panel.title, `${panel.title} - koush/ha_scrypted entry`);
+    }
+  }
+  for (const state of Object.values(hass?.states || {})) {
+    const slug = (ADDON_ICON.exec(state?.attributes?.entity_picture || '') || [])[1];
+    if (!slug) continue; // not an add-on entity; some update entities carry no picture at all
+    const title = state.attributes.title || slug;
+    if (!/scrypted/i.test(slug) && !/scrypted/i.test(title)) continue;
+    add(slug, `${title} - add-on (${slug})`);
+  }
+  return out;
+};
+
 const LABELS = {
   device: 'Scrypted device id or name',
   name: 'Name',
@@ -38,16 +98,13 @@ const HELPERS = {
   // a typo cannot be caught here and surfaces on the card as `device "..." not found`.
   device: 'The id from the Scrypted URL (/#/device/121), or the camera name. Not checked here.',
   aspect_ratio: 'Any CSS aspect-ratio value, for example 16 / 9.',
-  // Three things this has to carry, because one field now stands where three did: that
-  // the card chooses the route by itself, that the value means something different on
-  // each of them, and that empty is the normal case. The Name-versus-host warning stays -
-  // Home Assistant lists each integration entry under its *host*, so a user who reads
-  // "entry" and types the host matches nothing.
-  source: 'Leave empty unless the default does not fit. The card uses the koush/ha_scrypted'
-    + ' integration when it is installed, otherwise the Scrypted add-on - and Scrypted'
-    + ' credentials below always mean the add-on. Empty means the only integration entry,'
-    + " or the add-on's usual slug. Filled in, it names that entry's Name (not the host"
-    + ' Home Assistant lists it under) or the add-on slug.',
+  // Shorter than it was, because the list now carries what the prose used to: with a
+  // dropdown of real names there is no Name-versus-host confusion left to warn about. What
+  // remains is what "Automatic" means and the one thing the field cannot show - that
+  // credentials decide the route, not this.
+  source: 'Which Scrypted this card talks to. "Automatic" is right unless you have more than'
+    + ' one: it takes the only koush/ha_scrypted entry, or the Scrypted add-on. Filling in'
+    + ' Scrypted credentials below always means the add-on, whatever is chosen here.',
 };
 
 const STYLES = `
@@ -64,8 +121,12 @@ const STYLES = `
  * Built per mount, not once: see the module comment on the import cycle. The order is
  * the one a user fills the card in, which is why the two credential fields the warning
  * above the form is about come last.
+ *
+ * `sources` decides what `source` is drawn as. A dropdown is only offered when the list can
+ * express the value the card already has - see _mount() for why that condition is not just
+ * "the list is non-empty".
  */
-const buildSchema = () => [
+const buildSchema = (sources) => [
   { name: 'device', required: true, selector: { text: {} } },
   { name: 'name', selector: { text: {} } },
   { name: 'aspect_ratio', selector: { text: {} } },
@@ -82,11 +143,25 @@ const buildSchema = () => [
       },
     },
   },
-  // One field for both routes, because the card picks the route itself - and deliberately
-  // not prefilled with the add-on's default slug the way `addon` was. That default only
-  // applies to one of the two routes, and showing it would put a slug in front of every
-  // integration user, who then has to know it is wrong for them.
-  { name: 'source', selector: { text: {} } },
+  // One field for both routes, because the card picks the route itself. A list of what is
+  // installed where there is one, free text where there is not - and no `custom_value`
+  // combobox in between: a list that can also be typed into is a list nobody reads.
+  sources.length
+    ? {
+      name: 'source',
+      selector: {
+        select: {
+          mode: 'dropdown',
+          options: [
+            { value: NO_SOURCE, label: 'Automatic (the only entry, or the default add-on)' },
+            ...sources,
+          ],
+        },
+      },
+    }
+    // Exactly the field 0.5.0 shipped, so an installation neither heuristic can see is no
+    // worse off than before they existed.
+    : { name: 'source', selector: { text: {} } },
   { name: 'username', selector: { text: {} } },
   // A password selector rather than a text one: the field sits next to a dashboard
   // preview, in a dialog that is routinely open on a screen someone else can see.
@@ -120,6 +195,10 @@ class ScryptedCameraCardEditor extends HTMLElement {
     // is not in here came from somewhere else - the YAML tab, another browser - and
     // belongs in the form. See _syncForm().
     this._echoes = new Set();
+    // Whether `source` is drawn as a dropdown. Decided in _mount() from what is installed;
+    // seeded false so _formData() cannot read it before then and hand ha-form a stand-in for
+    // a field that turns out to be text.
+    this._sourceSelect = false;
     this.attachShadow({ mode: 'open' });
     // One note covering both modes rather than one note per mode. Written here it is
     // written once, while the selected mode is known only from setConfig() - which HA calls
@@ -174,8 +253,21 @@ class ScryptedCameraCardEditor extends HTMLElement {
       return;
     }
 
+    // Decided once, here, and remembered: _formData() and _commit() both have to know which
+    // control is on screen, and recomputing it per keystroke could flip the field under the
+    // user's cursor when Home Assistant loads a panel.
+    //
+    // Not simply "any candidates were found". A `source` the list cannot express - a slug set
+    // in YAML, a renamed add-on, an entry that is not loaded right now - must stay text, or
+    // ha-form would render the dropdown with nothing selected and the first edit of any other
+    // field would commit that emptiness over a working configuration.
+    const sources = scryptedSources(this._hass);
+    const current = (this._config && this._config.source) || '';
+    this._sourceSelect = sources.length > 0
+      && (!current || sources.some((s) => s.value === current));
+
     const form = document.createElement('ha-form');
-    form.schema = buildSchema();
+    form.schema = buildSchema(this._sourceSelect ? sources : []);
     form.computeLabel = (item) => LABELS[item.name] || item.name;
     form.computeHelper = (item) => HELPERS[item.name];
     form.hass = this._hass;
@@ -207,10 +299,10 @@ class ScryptedCameraCardEditor extends HTMLElement {
       aspect_ratio: c.aspect_ratio || '',
       autoplay: !!c.autoplay,
       destination: c.destination || NO_DESTINATION,
-      // Not filled in from a pre-0.5.0 `addon`, because the card does not read that key
-      // either: showing its value here would promise a card that works. An empty field on
-      // an old config is the honest rendering, and _commit() then drops the dead key.
-      source: c.source || '',
+      // The stand-in only where the field is a dropdown, because only a dropdown needs one.
+      // Not filled in from a pre-0.5.0 `addon` either: the card does not read that key, so
+      // showing its value would promise a card that works. _commit() drops the dead key.
+      source: c.source || (this._sourceSelect ? NO_SOURCE : ''),
       username: c.username || '',
       password: c.password || '',
     };
@@ -246,7 +338,11 @@ class ScryptedCameraCardEditor extends HTMLElement {
     // Absent, never empty: an absent `destination` is what "Scrypted decides" means,
     // and the YAML should not carry a key the user did not set.
     put(config, 'destination', value.destination === NO_DESTINATION ? '' : value.destination);
-    put(config, 'source', value.source);
+    // The stand-in maps back to absent, and only in dropdown mode: in text mode "auto" is a
+    // string a user could have typed as a slug, and deleting their key for it would be a
+    // silent edit of a config that was never wrong.
+    put(config, 'source',
+      this._sourceSelect && value.source === NO_SOURCE ? '' : value.source);
     // The three keys 0.5.0 dropped. None of them is read any more, so they are inert - but a
     // key sitting in the YAML reads as if it does something, and `addon` in particular used
     // to. Removing them unconditionally means one visit to this editor is enough to make a

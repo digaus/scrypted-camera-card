@@ -170,6 +170,11 @@ autoplay: false        # optional, default false - see below
 There is no option for the route: the card decides that by the rule in _Before you install_,
 and `source` is then read by whichever route it chose.
 
+In the visual editor this is a **list of what your Home Assistant actually has** — each
+`koush/ha_scrypted` entry by its Name, the Scrypted add-on, and "Automatic" for the usual case.
+No administrator rights are needed to build it. Anything the list cannot show, such as an
+add-on whose name does not contain "Scrypted", can still be set in YAML.
+
 Empty means "the obvious one": the only `koush/ha_scrypted` entry, or the add-on's usual slug
 `09e60fb6_scrypted`. Set it when that is not enough:
 
