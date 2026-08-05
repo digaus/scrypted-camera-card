@@ -26,9 +26,9 @@ implemented. Version and date are filled in at release time.
   entry is identified by its **Name**, while Home Assistant lists that entry under its
   **host**, so the value that looked obvious was the wrong one.
 
-  **No administrator rights are needed for it.** The add-on's slug is not read from
-  `/addons`, which is admin-gated; it comes out of the update entity the Supervisor creates
-  per add-on. Measured on a non-admin account.
+  The add-on's slug is not read from the Supervisor's `/addons` endpoint; it comes out of the
+  update entity the Supervisor creates per add-on, which costs no round trip and works even
+  where there is no Supervisor.
 
   Where nothing can be discovered — no integration entry, no Scrypted add-on — the field stays
   free text and behaves exactly as in 0.5.0. Same for a `source` set in YAML that the list does
