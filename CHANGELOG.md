@@ -7,6 +7,15 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.5.2] - 2026-08-05
+
+### Fixed
+
+- **The `source` dropdown from 0.5.1 never appeared** — the field stayed free text even with
+  Scrypted integrations and the add-on installed, so that release delivered nothing. The list
+  was assembled while the editor was still being constructed, before Home Assistant had handed
+  it the information it needed. It is now assembled once both are present.
+
 ## [0.5.1] - 2026-08-05
 
 ### Changed

@@ -195,10 +195,13 @@ class ScryptedCameraCardEditor extends HTMLElement {
     // is not in here came from somewhere else - the YAML tab, another browser - and
     // belongs in the form. See _syncForm().
     this._echoes = new Set();
-    // Whether `source` is drawn as a dropdown. Decided in _mount() from what is installed;
-    // seeded false so _formData() cannot read it before then and hand ha-form a stand-in for
-    // a field that turns out to be text.
+    // Whether `source` is drawn as a dropdown, and the options if so. Decided in
+    // _decideSource() once `hass` and the config have both arrived - which is *after* this
+    // constructor and after _mount()'s first pass. Seeded to the text field so the form can
+    // render before that happens rather than waiting for it.
     this._sourceSelect = false;
+    this._sources = [];
+    this._decided = false;
     this.attachShadow({ mode: 'open' });
     // One note covering both modes rather than one note per mode. Written here it is
     // written once, while the selected mode is known only from setConfig() - which HA calls
@@ -226,6 +229,7 @@ class ScryptedCameraCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = { ...config };
     this._syncForm();
+    this._decideSource();
   }
 
   set hass(hass) {
@@ -233,10 +237,47 @@ class ScryptedCameraCardEditor extends HTMLElement {
     // Not optional: ha-form renders nothing at all without it, which is how these
     // editors end up shipping as an empty box.
     if (this._form) this._form.hass = hass;
+    this._decideSource();
   }
 
   get hass() {
     return this._hass;
+  }
+
+  /**
+   * Which control `source` gets, decided once - but only once both `hass` and the config are
+   * here. 0.5.1 decided it in _mount(), which runs from the constructor: Home Assistant
+   * assigns `hass` and calls setConfig() *after* that, so the scan ran against nothing and
+   * every installation got the text field. The plan said to tolerate a missing `hass`; what
+   * it missed is that tolerating absence is worthless if the answer is then kept.
+   *
+   * Still exactly once, because the alternative is a scan of `hass.states` on every state
+   * update - thousands of entities, several times a second - and a field that could change
+   * shape under the user's cursor.
+   *
+   * `_decided` rather than a truthiness check on `_sources`: "nothing is installed" is a real
+   * answer and must not be retried forever.
+   */
+  _decideSource() {
+    if (this._decided || !this._hass || !this._config) return;
+    this._decided = true;
+    const sources = scryptedSources(this._hass);
+    const current = this._config.source || '';
+    // Not simply "any candidates were found". A `source` the list cannot express - a slug set
+    // in YAML, a renamed add-on, an entry that is not loaded right now - must stay text, or
+    // ha-form would render the dropdown with nothing selected and the first edit of any other
+    // field would commit that emptiness over a working configuration.
+    this._sourceSelect = sources.length > 0
+      && (!current || sources.some((s) => s.value === current));
+    this._sources = this._sourceSelect ? sources : [];
+    // The form may already be mounted with the text field: whichever of the two setters is
+    // last does this, and _mount() can finish before either. Reassigning `data` alongside the
+    // schema is deliberate - the stand-in for "empty" only exists in the dropdown - and safe
+    // here in a way _syncForm() is not: this fires once, at open, before anyone has typed.
+    if (this._form) {
+      this._form.schema = buildSchema(this._sources);
+      this._form.data = this._formData();
+    }
   }
 
   async _mount() {
@@ -253,21 +294,8 @@ class ScryptedCameraCardEditor extends HTMLElement {
       return;
     }
 
-    // Decided once, here, and remembered: _formData() and _commit() both have to know which
-    // control is on screen, and recomputing it per keystroke could flip the field under the
-    // user's cursor when Home Assistant loads a panel.
-    //
-    // Not simply "any candidates were found". A `source` the list cannot express - a slug set
-    // in YAML, a renamed add-on, an entry that is not loaded right now - must stay text, or
-    // ha-form would render the dropdown with nothing selected and the first edit of any other
-    // field would commit that emptiness over a working configuration.
-    const sources = scryptedSources(this._hass);
-    const current = (this._config && this._config.source) || '';
-    this._sourceSelect = sources.length > 0
-      && (!current || sources.some((s) => s.value === current));
-
     const form = document.createElement('ha-form');
-    form.schema = buildSchema(this._sourceSelect ? sources : []);
+    form.schema = buildSchema(this._sources);
     form.computeLabel = (item) => LABELS[item.name] || item.name;
     form.computeHelper = (item) => HELPERS[item.name];
     form.hass = this._hass;
