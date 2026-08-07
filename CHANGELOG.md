@@ -7,6 +7,32 @@ All notable changes to this card. Format per
 Entries are added once an implementation is verified — not when it is merely
 implemented. Version and date are filled in at release time.
 
+## [0.5.3] - 2026-08-07
+
+### Fixed
+
+- **A restart could leave the card loading forever, with no message.** When a peer connection
+  reached `connected` and then delivered no video at all, nothing noticed: the browser reported
+  no inbound video statistics whatsoever, and both the first-frame watch and the stream watchdog
+  read that absence as "too early to tell" rather than as a fault. The card sat on the loading
+  ring behind a stale snapshot indefinitely, with the stop button pulsing and nothing to say.
+
+  There is now a 15 s deadline on the first frame — counted while the card is actually on
+  screen, so a card waiting below the fold still keeps its session — after which the stream is
+  torn down and rebuilt through the ordinary retry cycle. The watchdog no longer excuses a
+  missing report either, once it has taken at least one measurement: a video report that
+  disappears from under a running stream counts as a stall.
+
+### Changed
+
+- **The outage message now clears on the first decoded frame rather than when the connection
+  comes up.** It used to disappear the moment the peer connection reported `connected`, which is
+  before anything has been painted — so the text said the outage was over while the loading ring
+  beside it still said otherwise, and against a camera that connects without ever sending video
+  the message blinked once per attempt instead of standing still. The spinner and the poster
+  already waited for a real frame; the message now does too. On an ordinary reconnect this leaves
+  the previous reason on screen a few seconds longer than before.
+
 ## [0.5.2] - 2026-08-05
 
 ### Fixed
