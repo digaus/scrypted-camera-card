@@ -1680,8 +1680,16 @@ class ScryptedCameraCard extends HTMLElement {
       if (!this._isVisible()) { moved = Date.now(); return; }
       const current = await session.framesDecoded().catch(() => null);
       if (this._session !== session) return;
-      if (current === null) return;
-      if (current !== frames) {
+      if (current === null) {
+        // Only before the first measurement is a missing report "too early", and that
+        // window belongs to the deadline in _watchFirstFrame(). Afterwards the report
+        // vanished from under a running stream, which is precisely the death this loop
+        // exists to catch - so fall through to the stall check without touching `moved`.
+        // Not folded into the comparison below: `null !== <number>` is true, so a
+        // shared path would read a disappearing report as "frames moved", stamp `moved`
+        // and reset the stall clock on every tick, forever.
+        if (frames === null) return;
+      } else if (current !== frames) {
         frames = current;
         moved = Date.now();
         this._busy(false);
