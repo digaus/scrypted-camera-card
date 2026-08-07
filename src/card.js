@@ -1611,6 +1611,44 @@ class ScryptedCameraCard extends HTMLElement {
    */
   _watchFirstFrame() {
     const session = this._session;
+    // The deadline belongs here, beside the wait it bounds. The poll below reads a
+    // missing measurement as "not yet" and would do so forever: framesDecoded()
+    // returns null while getStats() carries no inbound-rtp video report at all, and a
+    // peer connection that reaches 'connected' without one never produces a frame,
+    // never fails and never stalls - so without this nothing in this file ever speaks.
+    // That was BUG02: a live session behind a permanent spinner and no message.
+    // Through _recover() rather than a new failure path, so the outcome is the ordinary
+    // retry cycle with the reason on screen.
+    // WATCHDOG_STALL rather than a constant of its own: this is the question that
+    // constant already answers - how long without frames before the stream is dead -
+    // asked at the start of a stream instead of in the middle of one. Deliberately not
+    // tighter: too long only wastes time in an already broken state, while too short
+    // tears down and rebuilds a merely slow camera forever, which is worse than the
+    // hang it replaces.
+    //
+    // It measures *visible* time, and that is not optional. Playback is deliberately
+    // paused off screen and no frames are expected there - the watchdog says so at its
+    // own visibility guard - and an autoplay card below the fold opens its session
+    // while hidden, because _start() reaches _play() with no visibility gate. A
+    // deadline that counted hidden time would tear that session down and hand the user
+    // a cold negotiation on scroll, destroying exactly what _syncPlayback() exists to
+    // protect: the session survives a view switch so that coming back is instant.
+    // Re-arming rather than recovering is what keeps both true.
+    let deadline = null;
+    const arm = () => {
+      deadline = setTimeout(() => {
+        if (this._session !== session || this._live) return;
+        if (!this._isVisible()) { arm(); return; }
+        this._recover('the camera connected but sent no video');
+      }, WATCHDOG_STALL);
+    };
+    arm();
+    // One cleanup entry, not one per re-arm, which is why this does not go through
+    // _after(): a card that stays hidden re-arms every WATCHDOG_STALL for as long as
+    // it stays hidden, and _after() would push a cancel into _streamTimers each time -
+    // an array growing without bound for the life of the stream. Closing over the
+    // handle keeps a single entry pointing at whichever timer is current.
+    this._streamTimers.push(() => clearTimeout(deadline));
     const id = setInterval(async () => {
       if (this._session !== session) { clearInterval(id); return; }
       const frames = await session.framesDecoded().catch(() => null);
