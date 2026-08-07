@@ -1549,18 +1549,15 @@ class ScryptedCameraCard extends HTMLElement {
     if (state === 'connected') {
       this._showStop = true;
       this._syncToggle();
-      // The outage is over, so the reason and the escalation latch go with the
-      // message. Leaving either set would let the next attempt of a *later* outage
-      // render the old text, or speak on its first failure.
-      // _outageFromLive deliberately stays, for the same reason the poster and the
-      // spinner stay: 'connected' means the peer connection is up, not that a frame
-      // has been painted, so the stale snapshot is still on screen and still masking.
-      // _watchFirstFrame() clears it when a real frame lands. A connection that keeps
-      // reaching 'connected' and dying before its first frame therefore stays under
-      // the quiet period rather than escaping it once per attempt.
-      this._outageReason = null;
-      this._escalated = false;
-      this._syncStatus();
+      // Deliberately nothing about the outage message here, and this used to clear it.
+      // 'connected' means the peer connection is up, not that a frame has been painted -
+      // which is why the spinner, the poster and _outageFromLive all already wait for
+      // _watchFirstFrame() instead. The message was the one signal not held to that
+      // rule, so the card said "over" in text while the spinner beside it still said
+      // "waiting". BUG02 is what made that matter: a connection that reaches 'connected'
+      // and never delivers a frame reaches it once per attempt, so clearing here wiped
+      // the reason each time and the message blinked instead of standing. The clear now
+      // lives with the first decoded frame, beside the other three.
       // Deliberately no _busy(false) and no poster hide here: 'connected' means
       // the peer connection is up, not that a frame has been painted. Both happen
       // on the first decoded frame instead - see _watchFirstFrame.
@@ -1657,11 +1654,18 @@ class ScryptedCameraCard extends HTMLElement {
       clearInterval(id);
       this._live = true;
       // Frames are moving again, so the outage that escalated is genuinely over -
-      // and the poster it was hiding behind is behind a live picture now.
+      // and the poster it was hiding behind is behind a live picture now. The reason
+      // joins the other two here rather than being dropped at 'connected': a frame on
+      // screen is the first moment the user can see for themselves that it is over,
+      // and until then the text and the spinner have to agree. Every writer of
+      // _outageReason funnels back through _play(), which always calls this method, so
+      // nothing can strand a message by taking another route.
+      this._outageReason = null;
       this._escalated = false;
       this._outageFromLive = false;
       this._syncPoster();
       this._busy(false);
+      this._syncStatus();
     }, FIRST_FRAME_POLL);
     this._streamTimers.push(() => clearInterval(id));
   }
